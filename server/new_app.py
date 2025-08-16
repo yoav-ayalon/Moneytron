@@ -95,7 +95,7 @@ def _user_dir(username: str) -> Path:
 def _paths(username: str) -> Dict[str, Path]:
     udir = _user_dir(username)
     return {
-        "categories": (udir / "categories.json"),
+        "categories": (udir / "categories.json"), 
         "stage":      (udir / "current_month_transactions.json"),
         "past":       (udir / "past_data.json"),
         "settings":   (udir / "settings.json"),
