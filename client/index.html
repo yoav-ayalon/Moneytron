@@ -385,6 +385,18 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
   function v(r,k){ switch(k){ case 'tag':return Number(r.tag||0); case 'date':return String(r.date||''); case 'name':return String(r.name||'').toLowerCase(); case 'amount':return Number(r.amount||0); case 'debit':return Number(r.debit||0); case 'type':return String(r.type||''); case 'category':return String(r.category||'').toLowerCase(); case 'subcategory':return String(r.subcategory||'').toLowerCase(); case 'notes':return String(r.notes||'').toLowerCase(); case 'vi':return r.vi?1:0; default:return ''; } }
   const view=React.useMemo(()=>{ const a=rows.slice(); a.sort((x,y)=>{ const vx=v(x,sortKey), vy=v(y,sortKey); const c=(typeof vx==='number'&&typeof vy==='number')?(vx-vy):(vx<vy?-1:vx>vy?1:0); return sortDir==='asc'?c:-c; }); return a; },[rows,sortKey,sortDir]);
   function hdr(lbl,key,cls){ const ar=sortKey===key?(sortDir==='asc'?' ↑':' ↓'):' ↑↓'; return <th className={cls||''} onClick={()=>setSort(key)}>{lbl}{ar}</th>; }
+  // Delete all transactions handler
+  async function deleteAllTransactions() {
+    if (!rows.length) { alert('No transactions to delete'); return; }
+    if (!window.confirm('Are you sure you want to delete all current (last upload) transactions?')) return;
+    try {
+      await fetch('/api/current-month/reset', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User': localStorage.getItem('user') } });
+      setRows([]);
+      setMsg('All current month transactions deleted.');
+    } catch (err) {
+      alert('Failed to delete: ' + (err.message || err));
+    }
+  }
   return (
     <React.Fragment>
       {msg && <div className="panel" style={{marginBottom:12}}>{msg}</div>}
@@ -400,6 +412,7 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
           <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={onUpload}/>
         </label>
         <button className="btn" onClick={addManual}>+ Add Manual Row</button>
+        <button className="btn danger" style={{marginLeft:10}} onClick={deleteAllTransactions}>🗑️ Delete All</button>
         <div style={{flex:1}}></div>
         <button className="btn primary" onClick={saveAll}>💾 Save All</button>
       </div>
