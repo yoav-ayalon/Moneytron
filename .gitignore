@@ -1,0 +1,22 @@
+# Ignore Python virtual environments
+.venv/
+__pycache__/
+
+# Ignore user data
+users/
+
+# Ignore build artifacts
+dist/
+build/
+*.spec
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore old versions (optional)
+old_versions/
+
+# Ignore screenshots and demo (optional)
+screenshots/
+demo.mp4
