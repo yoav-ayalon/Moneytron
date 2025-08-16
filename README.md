@@ -65,6 +65,12 @@ Moneytron_V2/
 - Run:
   ```sh
   pyinstaller --onefile --add-data "client;client" server/new_app.py --name MoneyTron.exe
+  .venv\Scripts\pyinstaller `
+  --name MoneyTron `
+  --onefile `
+  --add-data "client;client" `
+  --add-data "users;users" `
+  server\new_app.py
   ```
 - This creates `dist/MoneyTron.exe`.
 - Create a `start.bat` file in the zip folder:
