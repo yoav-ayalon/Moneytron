@@ -154,14 +154,4 @@ https://github.com/user-attachments/assets/0b3a2235-7104-44b0-96d2-fbed7f6b0610
 
 
 
----
 
-## GitHub Upload
-1. Remove `.venv/` and any sensitive data from `users/` before uploading.
-2. Add `.gitignore` for `.venv/`, `__pycache__/`, and `users/`.
-3. Push to GitHub. Add screenshots and demo video to the repo.
-
----
-
-## Support
-For questions or help, open an issue on GitHub or contact the author.
