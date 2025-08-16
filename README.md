@@ -69,36 +69,36 @@ Moneytron_V2/
 - This creates `dist/MoneyTron.exe`.
 - Create a `start.bat` file in the zip folder:
   ```bat
-@echo off
-cd /d "%~dp0"
-
-echo [Start] MoneyTron launcher
-echo [Start] Working dir: %cd%
-
-REM Kill anything still running on port 5003
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /F /PID %%a >nul 2>&1
-
-REM Start MoneyTron
-start "" /b dist\MoneyTron.exe
-
-REM Wait up to 40 seconds for server to be ready
-setlocal enabledelayedexpansion
-set COUNT=0
-:loop
-  powershell -command "try {Invoke-WebRequest -Uri http://127.0.0.1:5003 -UseBasicParsing | Out-Null; exit 0} catch {exit 1}"
-  if !errorlevel! equ 0 (
-    echo [OK] Server started.
-    start "" http://127.0.0.1:5003
-    exit /b 0
-  )
-  set /a COUNT+=1
-  if !COUNT! geq 40 (
-    echo [ERROR] Server did not start. Check moneytron.log
-    pause
-    exit /b 1
-  )
-  timeout /t 1 >nul
-goto loop
+  @echo off
+  cd /d "%~dp0"
+  
+  echo [Start] MoneyTron launcher
+  echo [Start] Working dir: %cd%
+  
+  REM Kill anything still running on port 5003
+  for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /F /PID %%a >nul 2>&1
+  
+  REM Start MoneyTron
+  start "" /b dist\MoneyTron.exe
+  
+  REM Wait up to 40 seconds for server to be ready
+  setlocal enabledelayedexpansion
+  set COUNT=0
+  :loop
+    powershell -command "try {Invoke-WebRequest -Uri http://127.0.0.1:5003 -UseBasicParsing | Out-Null; exit 0} catch {exit 1}"
+    if !errorlevel! equ 0 (
+      echo [OK] Server started.
+      start "" http://127.0.0.1:5003
+      exit /b 0
+    )
+    set /a COUNT+=1
+    if !COUNT! geq 40 (
+      echo [ERROR] Server did not start. Check moneytron.log
+      pause
+      exit /b 1
+    )
+    timeout /t 1 >nul
+  goto loop
   ```
 
 ---
