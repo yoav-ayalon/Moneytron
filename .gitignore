@@ -14,9 +14,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# Ignore old versions (optional)
-old_versions/
-
 # Ignore screenshots and demo (optional)
 screenshots/
 demo.mp4
