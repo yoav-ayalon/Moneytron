@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict
 from threading import RLock
 from datetime import datetime
+import logging
 
 from flask import Flask, request, jsonify, send_from_directory, abort, make_response
 
@@ -40,6 +41,16 @@ USERS_DIR.mkdir(parents=True, exist_ok=True)
 # App init
 # =============================================================================
 app = Flask(__name__, static_folder=None)
+log_path = "moneytron.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(log_path, mode='a'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("moneytron")
 app.config["JSON_AS_ASCII"] = False
 app.config["JSON_SORT_KEYS"] = False
 app.url_map.strict_slashes = False
@@ -84,7 +95,7 @@ def _user_dir(username: str) -> Path:
 def _paths(username: str) -> Dict[str, Path]:
     udir = _user_dir(username)
     return {
-        "categories": (udir / "categories_and_personal.json"),
+        "categories": (udir / "categories.json"),
         "stage":      (udir / "current_month_transactions.json"),
         "past":       (udir / "past_data.json"),
         "settings":   (udir / "settings.json"),
@@ -189,16 +200,20 @@ def api_bootstrap():
 # =============================================================================
 @app.route("/api/categories", methods=["GET", "POST"])
 def api_categories():
+
     user = _require_user()
     p = _ensure_user_files(user)
+    logger.debug(f"Categories API for user: {user}, path: {p['categories']}")
 
     if request.method == "GET":
-        return jsonify(_read_json(p["categories"], {}))
+        cats = _read_json(p["categories"], {})
+        logger.debug(f"Loaded categories: {cats}")
+        return jsonify(cats)
 
     payload = request.get_json(force=True)
     cats = payload.get("categories", {})
     if not isinstance(cats, dict):
-        abort(400, description="'categories' must be an object {name: [subs...]}")
+        abort(400, description="'categories' must be an object {name: [subs...]}" )
     _atomic_write(p["categories"], cats)
     return jsonify({"ok": True})
 
