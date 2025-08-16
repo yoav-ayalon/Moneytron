@@ -62,6 +62,12 @@ Moneytron_V2/
   ```
 
 #### Windows
+- create env:
+  ```sh
+  python3 -m venv .venv
+  .venv\Scripts\pip install -r requirements.txt pyinstaller waitress flask
+
+  
 - Run:
   ```sh
   pyinstaller --onefile --add-data "client;client" server/new_app.py --name MoneyTron.exe
