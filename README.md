@@ -1,6 +1,7 @@
 # MoneyTron V2
 
 A simple, cross-platform personal finance tracker for families and friends. Upload your bank/credit files, categorize transactions, and view monthly summaries—all in your browser, with no cloud or account required.
+<img width="2456" height="571" alt="image" src="https://github.com/user-attachments/assets/33543462-960f-4150-8527-a3a1d4f5e261" />
 
 ---
 
@@ -142,6 +143,16 @@ Moneytron_V2/
 - Add screenshots to a `screenshots/` folder (create if needed).
 - Add a demo video (e.g., `demo.mp4`).
 - Update this README with image/video links if uploading to GitHub.
+<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 10 (2)" src="https://github.com/user-attachments/assets/24c5b98b-ca99-4d15-b54e-7fb925dfbdc6" />
+<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 05 (2)" src="https://github.com/user-attachments/assets/8c9a009c-ab9e-427b-8704-6cfcf753ea95" />
+<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 21 (2)" src="https://github.com/user-attachments/assets/f12a55a9-a873-4343-a42f-24f6ec17996f" />
+<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 29 (2)" src="https://github.com/user-attachments/assets/b3d5177f-a80c-4413-ae2e-4cfad3d584a9" />
+
+- 
+
+https://github.com/user-attachments/assets/0b3a2235-7104-44b0-96d2-fbed7f6b0610
+
+
 
 ---
 
