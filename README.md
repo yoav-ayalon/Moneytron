@@ -3,10 +3,45 @@
 A simple, cross-platform personal finance tracker for families and friends.  
 Upload your bank/credit files, categorize transactions, and view monthly summaries — all in your browser, with **no cloud and no accounts**. Data lives in the local `users/` folder.
 
-<img width="2456" height="571" alt="MoneyTron UI" src="https://github.com/user-attachments/assets/33543462-960f-4150-8527-a3a1d4f5e261" />
 
-> **Demo video:** add `demo.mp4` to this repo (or a YouTube link) and put it here:  
-> ▶️ [`demo.mp4`](./demo.mp4)
+---
+
+## Screenshots
+
+Below are some screenshots of MoneyTron in action (see the `screenshots/` folder for all images):
+
+<details>
+<summary>Click to expand screenshots</summary>
+
+**Login Page**  
+<img src="screenshots/login page.png" alt="Login Page" width="400" />
+
+**Categories Tab**  
+<img src="screenshots/catagories tab.png" alt="Categories Tab" width="400" />
+
+**Settings Tab**  
+<img src="screenshots/settings tab.png" alt="Settings Tab" width="400" />
+
+**Summary Tab (no data)**  
+<img src="screenshots/summary tab nd image.png" alt="Summary Tab No Data" width="400" />
+
+**Summary Tab (with data)**  
+<img src="screenshots/summary tab st image.png" alt="Summary Tab With Data" width="400" />
+
+**Transactions Tab**  
+<img src="screenshots/transactions tab.png" alt="Transactions Tab" width="400" />
+
+</details>
+
+---
+
+## Demo Video
+
+You can watch a demo of MoneyTron here:
+
+▶️ [`demo video.mp4`](videos/demo%20video.mp4)
+
+---
 
 ---
 
