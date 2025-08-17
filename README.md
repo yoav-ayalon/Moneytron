@@ -7,38 +7,38 @@ Upload your bank/credit files, categorize transactions, and view monthly summari
 ---
 
 
+
 ## Screenshots
 
-Below are inline screenshots of MoneyTron in action (see the `screenshots/` folder for all images):
+Below are screenshots of MoneyTron in action (see the `screenshots/` folder for all images):
 
-**Login Page**  
-<img src="screenshots/login page.png" alt="Login Page" width="400" />
+**Login Page**
+![Login Page](screenshots/login%20page.png)
 
-**Categories Tab**  
-<img src="screenshots/catagories tab.png" alt="Categories Tab" width="400" />
+**Categories Tab**
+![Categories Tab](screenshots/catagories%20tab.png)
 
-**Settings Tab**  
-<img src="screenshots/settings tab.png" alt="Settings Tab" width="400" />
+**Settings Tab**
+![Settings Tab](screenshots/settings%20tab.png)
 
-**Summary Tab (no data)**  
-<img src="screenshots/summary tab nd image.png" alt="Summary Tab No Data" width="400" />
+**Summary Tab (no data)**
+![Summary Tab No Data](screenshots/summary%20tab%20nd%20image.png)
 
-**Summary Tab (with data)**  
-<img src="screenshots/summary tab st image.png" alt="Summary Tab With Data" width="400" />
+**Summary Tab (with data)**
+![Summary Tab With Data](screenshots/summary%20tab%20st%20image.png)
 
-**Transactions Tab**  
-<img src="screenshots/transactions tab.png" alt="Transactions Tab" width="400" />
+**Transactions Tab**
+![Transactions Tab](screenshots/transactions%20tab.png)
 
 ---
 
 
+
 ## Demo Video
 
-Watch the MoneyTron demo video below:
+▶️ [Click here to download or play the demo video (MP4)](videos/demo%20video.mp4)
 
-<video src="videos/demo%20video.mp4" controls width="600" poster="screenshots/login page.png">
-   Your browser does not support the video tag.
-</video>
+> **Note:** GitHub does not support inline video playback in README files. To watch, download and open the file locally.
 
 ---
 
