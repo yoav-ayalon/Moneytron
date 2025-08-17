@@ -1,157 +1,375 @@
-# MoneyTron V2
+# MoneyTron V2 — README
 
-A simple, cross-platform personal finance tracker for families and friends. Upload your bank/credit files, categorize transactions, and view monthly summaries—all in your browser, with no cloud or account required.
-<img width="2456" height="571" alt="image" src="https://github.com/user-attachments/assets/33543462-960f-4150-8527-a3a1d4f5e261" />
+A simple, cross-platform personal finance tracker for families and friends.  
+Upload your bank/credit files, categorize transactions, and view monthly summaries — all in your browser, with **no cloud and no accounts**. Data lives in the local `users/` folder.
+
+<img width="2456" height="571" alt="MoneyTron UI" src="https://github.com/user-attachments/assets/33543462-960f-4150-8527-a3a1d4f5e261" />
+
+> **Demo video:** add `demo.mp4` to this repo (or a YouTube link) and put it here:  
+> ▶️ [`demo.mp4`](./demo.mp4)
 
 ---
 
-## Project Structure
+## Table of contents
+
+- [What you can do](#what-you-can-do)
+- [Project structure](#project-structure)
+- [How it works (high-level)](#how-it-works-high-level)
+- [Quick start (dev mode)](#quick-start-dev-mode)
+- [Build & package for macOS](#build--package-for-macos)
+- [Build & package for Windows](#build--package-for-windows)
+- [For family users (how to run it)](#for-family-users-how-to-run-it)
+- [Updating the app (what-to-do-on-update)](#updating-the-app-what-to-do-on-update)
+- [Troubleshooting](#troubleshooting)
+- [Data & privacy](#data--privacy)
+
+---
+
+## What you can do
+
+- **Multi-user:** each person has their own folder under `users/<Name>/`.
+- **Transactions:** upload monthly bank/credit files (CSV/XLSX; Hebrew headers supported), review & categorize.
+- **Manual add:** add single transactions if needed.
+- **Summary:** view totals by category/month and make finance conclusions.
+- **No internet required:** everything runs locally at `http://127.0.0.1:5003/`.
+
+---
+
+## Project structure
 
 ```
-Moneytron_V2/
-├── client/                # Frontend (React, index.html)
-│   └── index.html
-├── server/                # Backend (Flask API)
-│   └── new_app.py
-├── users/                 # User data (auto-created per user)
-│   └── <username>/
-│       ├── categories.json
-│       ├── current_month_transactions.json
-│       ├── past_data.json
-│       └── settings.json
-├── requirements.txt       # Python dependencies
-├── start.command          # Mac: Double-click to start app
-├── old_versions/          # (Optional) Place old zips/backups here
-└── .venv/                 # Python virtual environment (not needed for end users)
+MoneyTron/
+├─ server/
+│  └─ new_app.py              # Flask backend (Waitress), serves the UI and APIs (port 5003)
+├─ client/
+│  └─ index.html              # Single-file React frontend
+├─ users/
+│  └─ Roy/
+│     ├─ categories.json
+│     ├─ current_month_transactions.json
+│     └─ past_data.json
+│     └─ settings.json
+├─ start.command              # (macOS) double-click to run (kills port 5003; opens Chrome; starts app)
+├─ Start_MoneyTron.bat        # (Windows) double-click to run (kills port 5003; opens browser; starts app)
+└─ README.md
+```
+
+> The backend expects the **executable** (after packaging) to sit next to `client/` and `users/`.
+
+---
+
+## How it works (high-level)
+
+- On launch, the backend serves `client/index.html` and static assets.  
+- The `users/` directory stores all personal data (per user).  
+- When you upload files, they are parsed, shown in **Transactions**, and (when you save) written to:
+  - `users/<Name>/current_month_transactions.json`
+  - `users/<Name>/past_data.json` (merge happens only when you explicitly save)
+
+---
+
+## Quick start (dev mode)
+
+> Use this for local development, testing, or quick fixes without packaging.
+
+1. **Python & venv**
+   ```bash
+   cd MoneyTron
+   python3 -m venv .venv            # Windows: py -m venv .venv
+   source .venv/bin/activate        # Windows: .\.venv\Scriptsctivate
+   pip install -U pip flask waitress
+   ```
+
+2. **Run the server**
+   ```bash
+   python3 server/new_app.py        # Windows: py server
+ew_app.py
+   ```
+
+3. **Open the app**  
+   Go to http://127.0.0.1:5003/ in your browser.
+
+---
+
+## Build & package for macOS
+
+> Requires Python 3.10–3.12 and PyInstaller.
+
+1. **Install build deps**
+   ```bash
+   cd MoneyTron
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -U pip pyinstaller flask waitress
+   ```
+
+2. **Build the single-file app**
+   ```bash
+   pyinstaller      --name MoneyTron      --onefile      --add-data "client:client"      server/new_app.py
+   ```
+
+3. **Move the executable next to folders**
+   ```bash
+   mv dist/MoneyTron .
+   ```
+
+4. **Create (or update) `start.command`**  
+   Save this file at `MoneyTron/start.command`:
+
+   ```bash
+   #!/bin/bash
+   set -euo pipefail
+   cd "$(dirname "$0")"
+
+   # Ensure executable bits
+   chmod +x MoneyTron || true
+
+   # Kill anything on port 5003 (ignore errors)
+   if lsof -ti:5003 >/dev/null 2>&1; then
+     lsof -ti:5003 | xargs kill -9 || true
+   fi
+
+   # Open browser after a short delay (Chrome preferred; fallback to default)
+   ( sleep 2; open -a "Google Chrome" "http://127.0.0.1:5003/" || open "http://127.0.0.1:5003/" ) &
+
+   # Run the app (blocks)
+   ./MoneyTron
+   ```
+
+   Make it executable:
+   ```bash
+   chmod +x start.command
+   ```
+
+5. **Prepare a zip for family**
+   - Ensure the folder contains: `MoneyTron` (executable), `client/`, `users/`, `start.command`.
+   - Right-click the **MoneyTron** folder → **Compress**.
+   - Send the resulting `.zip`.
+
+---
+
+## Build & package for Windows
+
+> Use **Command Prompt (cmd)** for the build commands below.  
+> (PowerShell uses different line continuations; see Troubleshooting.)
+
+1. **Install build deps (cmd)**
+   ```bat
+   cd MoneyTron
+   py -m venv .venv
+   .\.venv\Scriptsctivate
+   pip install -U pip pyinstaller flask waitress
+   ```
+
+2. **Build the single-file app (cmd)**
+   ```bat
+   pyinstaller ^
+     --name MoneyTron ^
+     --onefile ^
+     --add-data "client;client" ^
+     server
+ew_app.py
+   ```
+
+3. **Move the executable next to folders (cmd)**
+   ```bat
+   move /Y dist\MoneyTron.exe .
+   ```
+
+4. **Create (or update) `Start_MoneyTron.bat`**  
+   Save this file at `MoneyTron/Start_MoneyTron.bat`:
+
+   ```bat
+   @echo off
+   setlocal
+   cd /d "%~dp0"
+
+   rem Kill anything on port 5003 (ignore errors)
+   for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /PID %%a /F >nul 2>&1
+
+   rem Open browser after a short delay in a separate shell
+   start "" cmd /c "timeout /t 2 >nul & start "" http://127.0.0.1:5003/"
+
+   rem Run the app (blocks)
+   MoneyTron.exe
+   ```
+
+5. **Prepare a zip for family**
+   - Ensure the folder contains: `MoneyTron.exe`, `client\`, `users\`, `Start_MoneyTron.bat`.
+   - Right-click the **MoneyTron** folder → **Send to → Compressed (zipped) folder**.
+   - Send the `.zip`.
+
+---
+
+## For family users (how to run it)
+
+### macOS (once or twice a month)
+
+1. **Unzip** the folder you received (e.g., to Desktop).  
+2. **Double-click `start.command`**.  
+   - If macOS warns that it’s from the internet, right-click → **Open** → **Open**.  
+   - If still blocked, see Troubleshooting.
+3. The app opens in Chrome (or your default browser) at **http://127.0.0.1:5003/**.
+4. Use the app:
+   - **Transactions** → upload your monthly files, review & categorize → **Save**.
+   - **Summary** → view your month, categories, insights.
+
+### Windows (once or twice a month)
+
+1. **Unzip** the folder you received (e.g., to Desktop).  
+2. **Double-click `Start_MoneyTron.bat`**.  
+   - If SmartScreen appears, click **More info → Run anyway**.
+3. Your browser opens at **http://127.0.0.1:5003/**.
+4. Use **Transactions** to upload & categorize → **Save** → check **Summary**.
+
+> **Your data lives in the `users/` folder.** Back it up occasionally (copy that folder).
+
+---
+
+## Updating the app (what-to-do-on-update)
+
+There are two common types of updates:
+
+### 1) UI change only (`client/index.html`)
+- **Developer:** rebuild the app and send a **new zip**  
+  (Because the packaged executable embeds the `client/` folder.)
+  - macOS: run the PyInstaller command again, update `MoneyTron` + `start.command`, zip and send.
+  - Windows: run the PyInstaller command again, update `MoneyTron.exe` + `Start_MoneyTron.bat`, zip and send.
+- **Family:** delete the old folder, unzip the new one. **Keep your old `users/` folder!**  
+  If needed, copy your old `users/` into the new folder (replace the empty one).
+
+### 2) Backend change (`server/new_app.py`)
+- Same process as above: **rebuild and send a new zip** for macOS/Windows.
+
+> **Fast patch (developers only, dev mode):** you can test changes by running `python server/new_app.py` locally without packaging. For family distribution, always rebuild.
+
+---
+
+## Troubleshooting
+
+**A) Nothing opens / only background color**  
+- Make sure `client/` was included in the build:
+  - macOS: `--add-data "client:client"`
+  - Windows: `--add-data "client;client"`
+- Ensure the executable (`MoneyTron` or `MoneyTron.exe`) sits **next to** `client/` and `users/`.
+- Open the browser console (F12) and check for 404s; if `index.html` can’t be found, rebuild.
+
+**B) “Port 5003 already in use”**  
+- The start scripts try to kill existing processes, but you can also do it manually:
+  - macOS:
+    ```bash
+    lsof -ti:5003 | xargs kill -9
+    ```
+  - Windows (cmd):
+    ```bat
+    for /f "tokens=5" %a in ('netstat -ano ^| findstr :5003') do taskkill /PID %a /F
+    ```
+
+**C) macOS says the file is from an unidentified developer**  
+- Right-click `start.command` → **Open** → **Open**.  
+- Or remove quarantine:
+  ```bash
+  xattr -dr com.apple.quarantine .
+  ```
+
+**D) PowerShell errors like “Missing expression after unary operator --”**  
+- You’re running the **Windows build command in PowerShell** with caret `^` line breaks.  
+- Use **Command Prompt (cmd)**, or put it on **one line** in PowerShell:
+  ```powershell
+  pyinstaller --name MoneyTron --onefile --add-data "client;client" server/new_app.py
+  ```
+
+**E) 404 on “/”**  
+- Run from the **project root**.
+- Verify `server/new_app.py` serves the UI and that `client/index.html` exists.
+
+---
+
+## Data & privacy
+
+- All your data stays local in `users/<Name>/`.
+- To back up, copy the entire `users/` folder.
+- To move computers, copy `users/` into the new MoneyTron folder.
+
+**Files:**
+- `categories.json` — your categories & preferences
+- `current_month_transactions.json` — the month you are currently editing
+- `past_data.json` — archive of saved months
+
+---
+
+
+## Build scripts (copy-paste)
+
+### `start.command` (macOS)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+
+chmod +x MoneyTron || true
+
+if lsof -ti:5003 >/dev/null 2>&1; then
+  lsof -ti:5003 | xargs kill -9 || true
+fi
+
+( sleep 2; open -a "Google Chrome" "http://127.0.0.1:5003/" || open "http://127.0.0.1:5003/" ) &
+
+./MoneyTron
+```
+
+Make executable:
+```bash
+chmod +x start.command
+```
+
+### `Start_MoneyTron.bat` (Windows)
+
+```bat
+@echo off
+setlocal
+cd /d "%~dp0"
+
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /PID %%a /F >nul 2>&1
+
+start "" cmd /c "timeout /t 2 >nul & start "" http://127.0.0.1:5003/"
+
+MoneyTron.exe
 ```
 
 ---
 
-## How to Build a Standalone App (PyInstaller)
+## Build commands (copy-paste)
 
-### 1. Prepare Your Environment
-- Install Python 3.12 (recommended)
-- Install dependencies:
-  ```sh
-  python3 -m venv .venv
-  source .venv/bin/activate
-  pip install -r requirements.txt
-  pip install pyinstaller waitress flask
-  ```
+### macOS
 
-### 2. Build the Executable
+```bash
+cd MoneyTron
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip pyinstaller flask waitress
 
-#### MacOS
-- Run:
-  ```sh
-  pyinstaller --onefile --add-data "client:client" server/new_app.py --name MoneyTron
-  ```
-- This creates `dist/MoneyTron` (the app). Test it:
-  ```sh
-  ./dist/MoneyTron
-  ```
-- Create a `start.command` file in the zip folder:
-  ```sh
-  #!/bin/bash
-  cd "$(dirname "$0")"
-  ./MoneyTron
-  ```
-- Make it executable:
-  ```sh
-  chmod +x start.command
-  chmod +x MoneyTron
-  ```
+pyinstaller   --name MoneyTron   --onefile   --add-data "client:client"   server/new_app.py
 
-#### Windows
-- create env:
-  ```sh
-  python3 -m venv .venv
-  .venv\Scripts\pip install -r requirements.txt pyinstaller waitress flask
+mv dist/MoneyTron .
+chmod +x start.command
+```
 
-  
-- Run:
-  ```sh
-  pyinstaller --onefile --add-data "client;client" server/new_app.py --name MoneyTron.exe
-  .venv\Scripts\pyinstaller `
-  --name MoneyTron `
-  --onefile `
-  --add-data "client;client" `
-  --add-data "users;users" `
-  server\new_app.py
-  ```
-- This creates `dist/MoneyTron.exe`.
-- Create a `start.bat` file in the zip folder:
-  ```bat
-  @echo off
-  cd /d "%~dp0"
-  
-  echo [Start] MoneyTron launcher
-  echo [Start] Working dir: %cd%
-  
-  REM Kill anything still running on port 5003
-  for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /F /PID %%a >nul 2>&1
-  
-  REM Start MoneyTron
-  start "" /b dist\MoneyTron.exe
-  
-  REM Wait up to 40 seconds for server to be ready
-  setlocal enabledelayedexpansion
-  set COUNT=0
-  :loop
-    powershell -command "try {Invoke-WebRequest -Uri http://127.0.0.1:5003 -UseBasicParsing | Out-Null; exit 0} catch {exit 1}"
-    if !errorlevel! equ 0 (
-      echo [OK] Server started.
-      start "" http://127.0.0.1:5003
-      exit /b 0
-    )
-    set /a COUNT+=1
-    if !COUNT! geq 40 (
-      echo [ERROR] Server did not start. Check moneytron.log
-      pause
-      exit /b 1
-    )
-    timeout /t 1 >nul
-  goto loop
-  ```
+### Windows (cmd)
 
----
+```bat
+cd MoneyTron
+py -m venv .venv
+.\.venv\Scriptsctivate
+pip install -U pip pyinstaller flask waitress
 
-## How to Package and Share
-1. Copy the following to a new folder:
-   - `dist/MoneyTron` (Mac) or `dist/MoneyTron.exe` (Windows)
-   - `client/` folder
-   - `start.command` (Mac) or `start.bat` (Windows)
-   - (Optional) `users/` folder if you want to pre-populate data
-2. Zip the folder and send to family/friends.
-3. They unzip, double-click `start.command` (Mac) or `start.bat` (Windows), and use the app in their browser (usually opens at http://127.0.0.1:5003/).
+pyinstaller ^
+  --name MoneyTron ^
+  --onefile ^
+  --add-data "client;client" ^
+  server
+ew_app.py
 
----
-
-## Usage Guide
-- **First time:** Upload your bank/credit file, categorize transactions, and save. View the summary for insights.
-- **Later:** Open the app again, view the summary, or upload new files as needed.
-- **No install needed:** Just unzip and double-click the start file.
-
----
-
-## Versioning & Backups
-- Place old zips or backup folders in `old_versions/` for easy reference.
-
----
-
-## Demo & Media
-- Add screenshots to a `screenshots/` folder (create if needed).
-- Add a demo video (e.g., `demo.mp4`).
-- Update this README with image/video links if uploading to GitHub.
-<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 10 (2)" src="https://github.com/user-attachments/assets/24c5b98b-ca99-4d15-b54e-7fb925dfbdc6" />
-<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 05 (2)" src="https://github.com/user-attachments/assets/8c9a009c-ab9e-427b-8704-6cfcf753ea95" />
-<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 21 (2)" src="https://github.com/user-attachments/assets/f12a55a9-a873-4343-a42f-24f6ec17996f" />
-<img width="1440" height="900" alt="Screenshot 2025-08-16 at 20 55 29 (2)" src="https://github.com/user-attachments/assets/b3d5177f-a80c-4413-ae2e-4cfad3d584a9" />
-
-- 
-
-https://github.com/user-attachments/assets/0b3a2235-7104-44b0-96d2-fbed7f6b0610
-
-
-
-
+move /Y dist\MoneyTron.exe .
+```
