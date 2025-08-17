@@ -36,9 +36,11 @@ Below are screenshots of MoneyTron in action (see the `screenshots/` folder for 
 
 ## Demo Video
 
-▶️ [Click here to download or play the demo video (MP4)](videos/demo%20video.mp4)
 
-> **Note:** GitHub does not support inline video playback in README files. To watch, download and open the file locally.
+
+https://github.com/user-attachments/assets/d97ff34d-4bb7-4767-bf24-8f172e75f099
+
+
 
 ---
 
