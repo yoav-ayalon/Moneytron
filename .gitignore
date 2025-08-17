@@ -2,8 +2,7 @@
 .venv/
 __pycache__/
 
-# Ignore user data
-users/
+
 
 # Ignore build artifacts
 dist/

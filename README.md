@@ -198,11 +198,12 @@ MoneyTron/
 
 2. **Build the single-file app (cmd)**
    ```bat
-   pyinstaller ^
-   --name MoneyTron ^
-   --onefile ^
-   --add-data "client;client" ^
-   server/new_app.py
+   .venv\Scripts\pyinstaller `
+   --name MoneyTron `
+   --onefile `
+   --add-data "client;client" `
+   --add-data "users;users" `
+   server\new_app.py
    ```
 
 3. **Move the executable next to folders (cmd)**
