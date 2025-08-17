@@ -197,46 +197,157 @@ function parseDateAny(v){ if(v==null||v==='') return null; if(typeof v==='number
 
 /* ================== File parsing (v6-like) ================== */
 function extractFromSheet_v6(aoa){
-  var hdr=-1,map={date:-1,name:-1,t:-1,db:-1};
-  var keys={date:[/תאריך/],name:[/שםביתעסק/,/שם.*עסק/],t:[/סכוםעסקה/,/עסקה.*סכום/],db:[/סכוםחיוב/,/חיוב.*סכום/]};
-  function normHeb(s){return String(s||'').toLowerCase().replace(/\s+/g,'').replace(/[^\u0590-\u05FFa-z0-9]/g,'');}
-  for(var r=0;r<Math.min(10,aoa.length);r++){
-    var row=aoa[r]||[], norm=row.map(normHeb);
-    function find(rx){ for(var c=0;c<norm.length;c++){ for(var k=0;k<rx.length;k++){ if(rx[k].test(norm[c])) return c; } } return -1; }
-    var cd=find(keys.date), cn=find(keys.name), ct=find(keys.t), cb=find(keys.db);
-    if(cd>=0||cn>=0||ct>=0||cb>=0){ hdr=r; map={date:cd,name:cn,t:ct,db:cb}; break; }
+  // ---------- helpers ----------
+  function normHeb(s){
+    return String(s||'')
+      .toLowerCase()
+      .replace(/\u200f|\u200e/g,'')     // strip rtl marks
+      .replace(/\s+/g,'')
+      .replace(/[^\u0590-\u05ffa-z0-9]/g,'');
   }
-  if(hdr<0){
-    hdr=0; var cols=(aoa[0]||[]).length, bestD=-1,bestN=-1,bestA1=-1,bestA2=-1,maxD=-1,maxN=-1,maxA1=-1,maxA2=-1;
-    for(var c=0;c<cols;c++){
-      var dC=0,nC=0,aC=0;
-      for(var r2=0;r2<Math.min(80,aoa.length);r2++){
-        var cell=aoa[r2]&&aoa[r2][c];
-        if(parseDateAny(cell)) dC++;
-        var s=String(cell||''); if(s && !isFinite(Number(s))) nC++;
-        if(isFinite(parseAmount(cell)) && parseAmount(cell)!==0) aC++;
+  function idxOf(patterns, normRow){
+    for (let c=0;c<normRow.length;c++){
+      const cell = normRow[c];
+      for (let k=0;k<patterns.length;k++){
+        if (patterns[k].test(cell)) return c;
       }
-      if(dC>maxD){maxD=dC; bestD=c;} if(nC>maxN){maxN=nC; bestN=c;} if(aC>maxA1){maxA1=aC; bestA1=c;}
     }
-    for(var c2=0;c2<cols;c2++){
-      if(c2===bestA1) continue;
-      var a2=0; for(var r3=0;r3<Math.min(80,aoa.length);r3++){ var cell2=aoa[r3]&&aoa[r3][c2]; if(isFinite(parseAmount(cell2)) && parseAmount(cell2)!==0) a2++; }
-      if(a2>maxA2){maxA2=a2; bestA2=c2;}
+    return -1;
+  }
+
+  // ---------- headers you asked for ----------
+  const keys = {
+    date: [
+      /תאריךערך/, /תאריך.*פעולה/, /תאריך.*עסקה/, /תאריך.*חיוב/, /תאריך.*רכישה/,
+      /תאריך($|[^א-ת])/, /תאריך/
+    ],
+    name: [
+      /תיאורפעולה/, /תיאורעסקה/, /תיאור/, /פירוט/, /פרטים/,
+      /שםביתעסק/, /שם.*עסק/
+    ],
+    t:   [/סכוםעסקה/, /עסקה.*סכום/, /transactionamount/, /amount/],
+    db:  [/סכוםחיוב/, /חיוב.*סכום/, /סכוםבשקלים/, /סכוםבש"ח/, /debitamount/, /chargeamount/],
+    h:   [/חובה/],
+    z:   [/זכות/]
+  };
+
+  // ---------- 1) find best header row by score ----------
+  let best = {row:-1, score:-1, map:null};
+
+  const maxRowsToScan = Math.min(60, aoa.length);
+  for (let r=0; r<maxRowsToScan; r++){
+    const row = aoa[r] || [];
+    const norm = row.map(normHeb);
+    if (norm.join('')==='') continue; // skip empty rows
+
+    // locate columns in this row
+    const m = {
+      date: idxOf(keys.date, norm),
+      name: idxOf(keys.name, norm),
+      t:    idxOf(keys.t, norm),
+      db:   idxOf(keys.db, norm),
+      h:    idxOf(keys.h, norm),
+      z:    idxOf(keys.z, norm),
+    };
+
+    // at least one amount header must exist in this row
+    const hasAmountHeader = (m.h>=0 || m.z>=0 || m.t>=0 || m.db>=0);
+    if (m.date<0 || !hasAmountHeader) continue;
+
+    // basic score by how many important headers we found
+    let score = 0;
+    ['date','name','t','db','h','z'].forEach(k => { if (m[k] >= 0) score += 1; });
+
+    // tiny bonus if row below looks like data (numbers under amount col, date under date col)
+    const next = aoa[r+1] || [];
+    const looksNumeric = (c) => (c>=0 && c<next.length && Math.abs(parseAmount(next[c]))>0);
+    const looksDate    = (c) => (c>=0 && c<next.length && !!parseDateAny(next[c]));
+    if (looksDate(m.date)) score += 2;
+    if (looksNumeric(m.h) || looksNumeric(m.z) || looksNumeric(m.t) || looksNumeric(m.db)) score += 2;
+
+    if (score > best.score) best = {row:r, score, map:m};
+  }
+
+  // ---------- fallback heuristic if not found ----------
+  let hdr = best.row;
+  let map = best.map || {date:-1,name:-1,t:-1,db:-1,h:-1,z:-1};
+  if (hdr < 0){
+    hdr = 0;
+    // naive fallback: guess columns by content types in first ~80 rows
+    const cols = (aoa[0]||[]).length;
+    let bestD=-1, bestText=-1, bestAmt1=-1, bestAmt2=-1;
+    let dMax=-1, nMax=-1, a1Max=-1, a2Max=-1;
+
+    for (let c=0;c<cols;c++){
+      let dC=0, nC=0, aC=0;
+      for (let r=0;r<Math.min(80,aoa.length);r++){
+        const cell = aoa[r] && aoa[r][c];
+        if (parseDateAny(cell)) dC++;
+        const s = String(cell||'');
+        if (s && !isFinite(Number(s))) nC++;
+        if (Math.abs(parseAmount(cell))>0) aC++;
+      }
+      if (dC>dMax){ dMax=dC; bestD=c; }
+      if (nC>nMax){ nMax=nC; bestText=c; }
+      if (aC>a1Max){ a1Max=aC; bestAmt1=c; }
     }
-    map={date:bestD,name:bestN,t:bestA1,db:bestA2};
+    for (let c=0;c<cols;c++){
+      if (c===bestAmt1) continue;
+      let aC=0;
+      for (let r=0;r<Math.min(80,aoa.length);r++){
+        const cell = aoa[r] && aoa[r][c];
+        if (Math.abs(parseAmount(cell))>0) aC++;
+      }
+      if (aC>a2Max){ a2Max=aC; bestAmt2=c; }
+    }
+
+    map = {date:bestD, name:bestText, t:bestAmt1, db:bestAmt2, h:-1, z:-1};
   }
-  var out=[];
-  for(var r=hdr+1;r<aoa.length;r++){
-    var row=aoa[r]||[];
-    var date=map.date>=0?parseDateAny(row[map.date]):null;
-    var name=map.name>=0?String(row[map.name]||'').trim():'';
-    var tAmt=map.t>=0?parseAmount(row[map.t]):0;
-    var dAmt=map.db>=0?parseAmount(row[map.db]):(tAmt||0);
-    if(!date||!name||(!tAmt&&!dAmt)) continue;
-    out.push({date:date,name:name,amount:Math.abs(tAmt||0),debit:Number(dAmt||0)});
+
+  // ---------- 2) extract rows ----------
+  const out = [];
+  for (let r=hdr+1; r<aoa.length; r++){
+    const row = aoa[r] || [];
+
+    const date = map.date>=0 ? parseDateAny(row[map.date]) : null;
+    const name = map.name>=0 ? String(row[map.name]||'').trim() : '';
+    if (!date || !name) continue;
+
+    // prefer חובה/זכות if available & non-zero
+    const hAmt = map.h>=0 ? parseAmount(row[map.h]) : 0;
+    const zAmt = map.z>=0 ? parseAmount(row[map.z]) : 0;
+    const hz   = Math.abs(hAmt)>0 ? hAmt : (Math.abs(zAmt)>0 ? zAmt : 0);
+
+    let tAmt = 0, dAmt = 0;
+    if (Math.abs(hz)>0){
+      tAmt = Math.abs(hz);
+      dAmt = Math.abs(hz);
+    } else {
+      tAmt = map.t>=0  ? parseAmount(row[map.t])  : 0;
+      dAmt = map.db>=0 ? parseAmount(row[map.db]) : (tAmt||0);
+      if (!dAmt && tAmt) dAmt = Math.abs(tAmt);
+      if (!tAmt && dAmt) tAmt = Math.abs(dAmt);
+    }
+
+    if (!tAmt && !dAmt) continue;
+
+    out.push({
+      date,
+      name,
+      amount: Math.abs(tAmt||0),
+      debit:  Number(dAmt||0)
+    });
   }
+
+  // Quick console hint if nothing parsed
+  if (!out.length){
+    console.log('⚠️ No rows parsed. Header guess row:', hdr, aoa[hdr]);
+    console.log('Map used:', map);
+  }
+
   return out;
 }
+
 function extractFromWorkbook_v6(file){
   return new Promise(function(res,rej){
     var reader=new FileReader();
