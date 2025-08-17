@@ -192,7 +192,7 @@ MoneyTron/
    ```bat
    cd MoneyTron
    py -m venv .venv
-   .\.venv\Scriptsctivate
+   .\.venv\Scripts\activate
    pip install -U pip pyinstaller flask waitress
    ```
 
