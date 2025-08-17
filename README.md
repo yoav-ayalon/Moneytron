@@ -6,12 +6,10 @@ Upload your bank/credit files, categorize transactions, and view monthly summari
 
 ---
 
+
 ## Screenshots
 
-Below are some screenshots of MoneyTron in action (see the `screenshots/` folder for all images):
-
-<details>
-<summary>Click to expand screenshots</summary>
+Below are inline screenshots of MoneyTron in action (see the `screenshots/` folder for all images):
 
 **Login Page**  
 <img src="screenshots/login page.png" alt="Login Page" width="400" />
@@ -31,15 +29,16 @@ Below are some screenshots of MoneyTron in action (see the `screenshots/` folder
 **Transactions Tab**  
 <img src="screenshots/transactions tab.png" alt="Transactions Tab" width="400" />
 
-</details>
-
 ---
+
 
 ## Demo Video
 
-You can watch a demo of MoneyTron here:
+Watch the MoneyTron demo video below:
 
-▶️ [`demo video.mp4`](videos/demo%20video.mp4)
+<video src="videos/demo%20video.mp4" controls width="600" poster="screenshots/login page.png">
+   Your browser does not support the video tag.
+</video>
 
 ---
 
