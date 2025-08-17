@@ -112,14 +112,13 @@ MoneyTron/
    ```bash
    cd MoneyTron
    python3 -m venv .venv            # Windows: py -m venv .venv
-   source .venv/bin/activate        # Windows: .\.venv\Scriptsctivate
+   source .venv/bin/activate        # Windows: .\.venv\Scripts\activate
    pip install -U pip flask waitress
    ```
 
 2. **Run the server**
    ```bash
-   python3 server/new_app.py        # Windows: py server
-ew_app.py
+   python3 server/new_app.py        # Windows: py server/new_app.py
    ```
 
 3. **Open the app**  
@@ -141,7 +140,7 @@ ew_app.py
 
 2. **Build the single-file app**
    ```bash
-   pyinstaller      --name MoneyTron      --onefile      --add-data "client:client"      server/new_app.py
+   pyinstaller --name MoneyTron --onefile --add-data "client:client" server/new_app.py
    ```
 
 3. **Move the executable next to folders**
@@ -200,11 +199,10 @@ ew_app.py
 2. **Build the single-file app (cmd)**
    ```bat
    pyinstaller ^
-     --name MoneyTron ^
-     --onefile ^
-     --add-data "client;client" ^
-     server
-ew_app.py
+   --name MoneyTron ^
+   --onefile ^
+   --add-data "client;client" ^
+   server/new_app.py
    ```
 
 3. **Move the executable next to folders (cmd)**
