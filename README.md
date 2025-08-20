@@ -135,7 +135,7 @@ MoneyTron/
    cd MoneyTron
    python3 -m venv .venv
    source .venv/bin/activate
-   pip install -U pip pyinstaller flask waitress
+   pip install -r requirements.txt
    ```
 
 2. **Build the single-file app**
@@ -154,21 +154,69 @@ MoneyTron/
    ```bash
    #!/bin/bash
    set -euo pipefail
-   cd "$(dirname "$0")"
 
-   # Ensure executable bits
-   chmod +x MoneyTron || true
+   if [ -n "${BASH_SOURCE:-}" ]; then
+   SRC="${BASH_SOURCE[0]}"
+   elif [ -n "${ZSH_VERSION:-}" ]; then
+   SRC="${(%):-%N}"
+   else
+   SRC="$0"
+   fi
+   SCRIPT_DIR="$(cd "$(dirname "$SRC")" && pwd)"
+   cd "$SCRIPT_DIR"
 
-   # Kill anything on port 5003 (ignore errors)
-   if lsof -ti:5003 >/dev/null 2>&1; then
-     lsof -ti:5003 | xargs kill -9 || true
+   echo "[Start] MoneyTron launcher"
+   echo "[Start] Working dir: $(pwd)"
+
+   echo "[Start] Checking for MoneyTron executable in working dir"
+   echo "[Start] Users dir: $(pwd)/users"
+   if [ ! -f "MoneyTron" ]; then
+   echo "[Error] MoneyTron executable not found in working directory. Make sure the PyInstaller build is in this folder."
+   read -n1 -r -p "Press any key to close..."
+   exit 1
    fi
 
-   # Open browser after a short delay (Chrome preferred; fallback to default)
-   ( sleep 2; open -a "Google Chrome" "http://127.0.0.1:5003/" || open "http://127.0.0.1:5003/" ) &
 
-   # Run the app (blocks)
-   ./MoneyTron
+   # Check if port 5003 is in use and force kill it if so
+   PIDS=$(lsof -ti :5003)
+   if [ -n "$PIDS" ]; then
+   echo "[Start] Port 5003 is in use. Force killing process(es): $PIDS"
+   kill -9 $PIDS 2>/dev/null || true
+   sleep 1
+   fi
+
+   echo "[Start] Launching server..."
+
+   chmod +x "MoneyTron" || true
+   xattr -dr com.apple.quarantine "MoneyTron" 2>/dev/null || true
+
+   echo "[Start] Launching server..."
+   nohup ./MoneyTron > "moneytron.log" 2>&1 &
+
+
+   # Wait for server to be ready, then open browser
+   ( 
+   for i in {1..30}; do
+      if curl -sSf http://127.0.0.1:5003 >/dev/null 2>&1; then
+         if command -v "google-chrome" >/dev/null 2>&1; then
+         "google-chrome" "http://127.0.0.1:5003"
+         elif command -v "chrome" >/dev/null 2>&1; then
+         "chrome" "http://127.0.0.1:5003"
+         elif [ -d "/Applications/Google Chrome.app" ]; then
+         open -a "Google Chrome" "http://127.0.0.1:5003"
+         else
+         open "http://127.0.0.1:5003"
+         fi
+         exit 0
+      fi
+      sleep 1
+   done
+   echo "[Warning] Server did not start in time. Please open http://127.0.0.1:5003 manually."
+   ) &
+
+   echo "MoneyTron is launching. The app should open in your browser."
+   echo "If it does not, open http://127.0.0.1:5003 manually."
+   exit 0
    ```
 
    Make it executable:
@@ -193,17 +241,25 @@ MoneyTron/
    cd MoneyTron
    py -m venv .venv
    .\.venv\Scripts\activate
-   pip install -U pip pyinstaller flask waitress
+   pip install -r requirements.txt
    ```
 
 2. **Build the single-file app (cmd)**
    ```bat
-   .venv\Scripts\pyinstaller `
-   --name MoneyTron `
-   --onefile `
-   --add-data "client;client" `
-   --add-data "users;users" `
-   server\new_app.py
+         pyinstaller `
+      --noconfirm --clean `
+      --name MoneyTron `
+      --onefile `
+      --add-data "client;client" `
+      --add-data "users;users" `
+      --collect-all flask `
+      --collect-all jinja2 `
+      --collect-all werkzeug `
+      --collect-all click `
+      --collect-all itsdangerous `
+      --collect-all markupsafe `
+      --collect-all waitress `
+      server\new_app.py
    ```
 
 3. **Move the executable next to folders (cmd)**
@@ -216,17 +272,46 @@ MoneyTron/
 
    ```bat
    @echo off
-   setlocal
    cd /d "%~dp0"
 
-   rem Kill anything on port 5003 (ignore errors)
-   for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do taskkill /PID %%a /F >nul 2>&1
+   echo ============================================
+   echo [Start] MoneyTron launcher
+   echo [Info ] Working dir: %cd%
+   echo ============================================
 
-   rem Open browser after a short delay in a separate shell
-   start "" cmd /c "timeout /t 2 >nul & start "" http://127.0.0.1:5003/"
+   REM Kill anything still running on port 5003
+   echo [Step ] Checking for existing process on port 5003...
+   for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5003') do (
+   echo [Kill ] Terminating PID %%a ...
+   taskkill /F /PID %%a >nul 2>&1
+   )
 
-   rem Run the app (blocks)
-   MoneyTron.exe
+   REM Start MoneyTron
+   echo [Step ] Launching MoneyTron.exe ...
+   start "" /b MoneyTron.exe
+
+   REM Wait up to 40 seconds for server to be ready
+   setlocal enabledelayedexpansion
+   set COUNT=0
+   :loop
+   echo [Wait ] Attempt !COUNT!/40 ... probing http://127.0.0.1:5003
+   powershell -command "try {Invoke-WebRequest -Uri http://127.0.0.1:5003 -UseBasicParsing | Out-Null; exit 0} catch {exit 1}"
+   if !errorlevel! equ 0 (
+      echo [OK   ] Server is responding on port 5003.
+      echo [Step ] Opening browser...
+      start "" http://127.0.0.1:5003
+      echo [Done ] MoneyTron launched successfully.
+      pause
+      exit /b 0
+   )
+   set /a COUNT+=1
+   if !COUNT! geq 40 (
+      echo [ERROR] Server did not start after 40s. Check moneytron.log
+      pause
+      exit /b 1
+   )
+   timeout /t 1 /nobreak >nul
+   goto loop
    ```
 
 5. **Prepare a zip for family**

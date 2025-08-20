@@ -2,10 +2,9 @@
 .venv/
 __pycache__/
 
-
-
-# Ignore build artifacts
-dist/
+# Ignore Users
+users/Roy
+users/
 build/
 *.spec
 
