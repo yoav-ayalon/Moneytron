@@ -386,4 +386,4 @@ if __name__ == "__main__":
         print(f"[MoneyTron] Waitress unavailable ({e}); Flask dev server fallback")
         print(f"[MoneyTron] Serving client from: {CLIENT_DIR}")
         print(f"[MoneyTron] Data dir: {USERS_DIR}")
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
