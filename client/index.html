@@ -835,9 +835,430 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
 /* ---------- Data (PAST), Summary, Settings — unchanged from your last file ---------- */
 /* (Keeping as-is for brevity) */
 
-function DataTab({past,categories,onSaved}){ /* ... unchanged ... */ return <div/>; }
-function SummaryTab({past,active}){ /* ... unchanged ... */ return <div/>; }
-function SettingsTab({ user, past, categories, stage, settings, onReload }){ /* ... unchanged ... */ return <div/>; }
+/* ---------- Data (PAST) — with filters for Tag, Category, Sub-category, Name ---------- */
+function DataTab({past,categories,onSaved}){
+  const [rows,setRows]=React.useState(Array.isArray(past)?past.slice():[]);
+  const [q,setQ]=React.useState(''); const [sortKey,setSortKey]=React.useState('date'); const [sortDir,setSortDir]=React.useState('asc'); const [saving,setSaving]=React.useState(false);
+  React.useEffect(()=>setRows(Array.isArray(past)?past.slice():[]),[JSON.stringify(past||[])]);
+  const totalTx=rows.length; const totalOutcome=rows.reduce((a,r)=>a+(String(r.type||'').toLowerCase()==='income'?0:Number(r.debit||0)),0); const catCount=Object.keys(categories||{}).length; 
+  const activeMonths=(function(list){var s={}; list.forEach(r=>{var t=String(r.tag||''); if(t&&t!=='0') s[t]=1;}); return Object.keys(s).length;})(rows);
+  // Single filter: select column and enter value
+  // Default: if there are tags, set filterCol to 'tag' and filterVal to max tag
+  const tags = React.useMemo(() => rows.map(r => Number(r.tag)).filter(n => !isNaN(n)), [rows]);
+  const maxTag = tags.length ? Math.max(...tags) : '';
+  const [filterCol, setFilterCol] = React.useState(tags.length ? 'tag' : '');
+  const [filterVal, setFilterVal] = React.useState(tags.length ? String(maxTag) : '');
+  // Optional second filter (applies after the first)
+  const [filter2Col, setFilter2Col] = React.useState('');
+  const [filter2Val, setFilter2Val] = React.useState('');
+  // If rows change and maxTag changes, update filterCol/Val if filterCol is empty or tag
+  React.useEffect(() => {
+    if (tags.length && (!filterCol || filterCol === 'tag') && (!filterVal || filterVal !== String(maxTag))) {
+      setFilterCol('tag');
+      setFilterVal(String(maxTag));
+    }
+  }, [tags.length, maxTag]);
+  function patch(id,p){ const i=rows.findIndex(r=>r.id===id); if(i<0) return; const n=rows.slice(); n[i]=Object.assign({},n[i],p); setRows(n); }
+  function delRow(id){ setRows(rows.filter(r=>r.id!==id)); }
+  function toggleType(id){ const r=rows.find(x=>x.id===id); if(!r) return; patch(id,{type:r.type==='Expense'?'Income':'Expense'}); }
+  // Toggle currency is now strictly visual: only changes the symbol, not the value
+  function toggleCurrency(id) {
+    const r = rows.find(x => x.id === id); if (!r) return;
+    const next = (r.currency || 'ILS') === 'ILS' ? 'USD' : 'ILS';
+    patch(id, { currency: next });
+  }
+  function onAmount(id,val){ const r=rows.find(x=>x.id===id); if(!r) return; const amt=Number(val||0); patch(id,{amount:amt}); }
+  function save(){ setSaving(true); API.savePast(rows).then(()=>{ setSaving(false); onSaved && onSaved(rows); alert('Past data updated.'); }).catch(e=>{ setSaving(false); alert('Save failed: '+e.message); }); }
+  function setSort(k){ if(sortKey===k) setSortDir(sortDir==='asc'?'desc':'asc'); else { setSortKey(k); setSortDir('asc'); } }
+  function v(r,k){ switch(k){ case 'tag':return Number(r.tag||0); case 'date':return String(r.date||''); case 'name':return String(r.name||'').toLowerCase(); case 'amount':return Number(r.amount||0); case 'debit':return Number(r.debit||0); case 'type':return String(r.type||''); case 'category':return String(r.category||'').toLowerCase(); case 'subcategory':return String(r.subcategory||'').toLowerCase(); default:return ''; } }
+  const filtered = React.useMemo(() => {
+    const x = (q || '').trim().toLowerCase();
+    return (rows || []).filter(r => {
+      // Text search (q)
+      const matchText = !x || [
+        r.date, r.name, r.notes, r.category, r.subcategory, r.tag
+      ].some(v => String(v == null ? '' : v).toLowerCase().includes(x));
+      // Single column filter
+      let matchCol = true;
+      if (filterCol && filterVal.trim()) {
+        const val = String(filterVal).toLowerCase();
+        switch (filterCol) {
+          case 'tag': matchCol = String(r.tag == null ? '' : r.tag).toLowerCase().includes(val); break;
+          case 'name': matchCol = String(r.name == null ? '' : r.name).toLowerCase().includes(val); break;
+          case 'category': matchCol = String(r.category == null ? '' : r.category).toLowerCase().includes(val); break;
+          case 'subcategory': matchCol = String(r.subcategory == null ? '' : r.subcategory).toLowerCase().includes(val); break;
+          default: matchCol = true;
+        }
+      }
+      // Second column filter (applied on top of the first)
+      let matchCol2 = true;
+      if (filter2Col && filter2Val.trim()) {
+        const val2 = String(filter2Val).toLowerCase();
+        switch (filter2Col) {
+          case 'tag':         matchCol2 = String(r.tag == null ? '' : r.tag).toLowerCase().includes(val2); break;
+          case 'name':        matchCol2 = String(r.name == null ? '' : r.name).toLowerCase().includes(val2); break;
+          case 'category':    matchCol2 = String(r.category == null ? '' : r.category).toLowerCase().includes(val2); break;
+          case 'subcategory': matchCol2 = String(r.subcategory == null ? '' : r.subcategory).toLowerCase().includes(val2); break;
+          default:            matchCol2 = true;
+        }
+      }
+      return matchText && matchCol && matchCol2;
+    });
+  }, [rows, q, filterCol, filterVal, filter2Col, filter2Val]);
+  // No longer need tagOptions, catOptions, subOptions, nameOptions
+  const view=React.useMemo(()=>{ const a=filtered.slice(); a.sort((x,y)=>{ const vx=v(x,sortKey), vy=v(y,sortKey); const c=(typeof vx==='number'&&typeof vy==='number')?(vx-vy):(vx<vy?-1:vx>vy?1:0); return sortDir==='asc'?c:-c; }); return a; },[filtered,sortKey,sortDir]);
+  function hdr(lbl,key,cls){ const ar=sortKey===key?(sortDir==='asc'?' ↑':' ↓'):' ↑↓'; return <th className={cls||''} onClick={()=>setSort(key)}>{lbl}{ar}</th>; }
+  return (
+    <React.Fragment>
+      <div className="section-title">📊 Transaction Data</div>
+      <div className="kpis">
+        <div className="kpi k1">Total Transactions<span className="n">{(totalTx)}</span></div>
+        <div className="kpi k2">Total Spending<span className="n">₪{fmt2(totalOutcome)}</span></div>
+        <div className="kpi k3">Categories<span className="n">{(catCount)}</span></div>
+        <div className="kpi k1">Active Months<span className="n">{(activeMonths)}</span></div>
+      </div>
+      <div className="panel" style={{marginBottom:12}}>
+        <div className="toolbar" style={{gap: 18}}>
+          <div className="left" style={{display:'flex',alignItems:'center',gap:8}}>
+            <input className="input-xs" type="text" placeholder="Search by name, category, notes…" value={q} onChange={(e)=>setQ(e.target.value)}/>
+            <button className="btn btn-xs" onClick={()=>setQ('')}>Clear</button>
+          </div>
+          <div className="middle" style={{display:'flex',alignItems:'center',gap:32,flexWrap:'wrap',minHeight:'64px'}}>
+            {/* Primary and Secondary filter labels and controls in a single horizontal row, aligned with search */}
+            <div style={{display:'flex',flexDirection:'row',alignItems:'center',gap:32}}>
+              {/* Primary */}
+              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-start',justifyContent:'center'}}>
+                <label style={{fontWeight:600,marginBottom:4,marginLeft:2}}>Primary</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <select className="input-xs" style={{minWidth:120,height:'40px'}} value={filterCol} onChange={e=>setFilterCol(e.target.value)}>
+                    <option value="">Filter by…</option>
+                    <option value="tag">Tag</option>
+                    <option value="name">Name</option>
+                    <option value="category">Category</option>
+                    <option value="subcategory">Sub-category</option>
+                  </select>
+                  <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Value" value={filterVal} onChange={e=>setFilterVal(e.target.value)} disabled={!filterCol}/>
+                </div>
+              </div>
+              {/* Secondary */}
+              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-start',justifyContent:'center'}}>
+                <label style={{fontWeight:600,marginBottom:4,marginLeft:2}}>Secondary</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <select className="input-xs" style={{minWidth:120,height:'40px'}} value={filter2Col} onChange={e=>setFilter2Col(e.target.value)} disabled={!filterCol}>
+                    <option value="">(optional)…</option>
+                    <option value="tag">Tag</option>
+                    <option value="name">Name</option>
+                    <option value="category">Category</option>
+                    <option value="subcategory">Sub-category</option>
+                  </select>
+                  <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Second value" value={filter2Val} onChange={e=>setFilter2Val(e.target.value)} disabled={!filter2Col || !filterCol}/>
+                </div>
+              </div>
+            </div>
+            {(filterCol||filterVal||filter2Col||filter2Val) && (
+              <button
+                className="btn btn-xs"
+                style={{alignSelf:'center',marginLeft:8,marginBottom:0,height:'40px'}}
+                onClick={() => {
+                  setFilterCol(''); setFilterVal('');
+                  setFilter2Col(''); setFilter2Val('');
+                }}>
+                Reset
+              </button>
+            )}
+          </div>
+            <div className="right">
+              <button className="btn btn-xs primary" onClick={save} disabled={saving}>{saving?'Saving…':'💾 Save Changes'}</button>
+            </div>
+          </div>
+        </div>
+      <div className="panel">
+        <table>
+          <thead><tr>
+            <th className="nosort">✖</th>
+            {hdr('Tag','tag','w-tag')}
+            {hdr('Date','date','w-date')}
+            {hdr('Name','name','w-name')}
+            {hdr('Transaction Amount','amount','w-amt')}
+            {hdr('Debit Amount (ILS)','debit','w-debit')}
+            {hdr('Type','type')}
+            {hdr('Category','category','w-cat')}
+            {hdr('Sub-category','subcategory','w-sub')}
+            <th className="nosort w-notes">Notes</th>
+            <th className="nosort">Vi</th>
+          </tr></thead>
+          <tbody>
+            {view.length? view.map((r,i)=>{
+              const id=r.id||('p_'+i+'_'+(r.tag||'')+'_'+(r.date||'')+'_'+(r.name||'')); const currency=r.currency||'ILS';
+              return (
+                <tr key={id} className={r.vi?'row-vi':''}>
+                  <td style={{width:48}}><button className="btn danger" onClick={()=>delRow(id)}>✖</button></td>
+                  <td className="w-tag"><input type="number" value={r.tag||''} onChange={(e)=>patch(id,{tag:Number(e.target.value||0)})}/></td>
+                  <td className="w-date"><input type="text" value={r.date||''} onChange={(e)=>patch(id,{date:e.target.value})}/></td>
+                  <td className="w-name" style={{textAlign:'center'}}>
+                    <div className="cell-hscroll"><input className="fit" type="text" value={r.name||''} title={r.name||''} onChange={(e)=>patch(id,{name:e.target.value})}/></div>
+                  </td>
+                  <td className="w-amt">
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                      <button className="currency-toggle" onClick={()=>toggleCurrency(id)}>{currency==='USD'?'$':'₪'}</button>
+                      <input className="num-input" type="number" step="0.01" value={fmt2(r.amount)} onChange={(e)=>onAmount(id,e.target.value)}/>
+                    </div>
+                  </td>
+                  <td className="w-debit"><input className="num-input" type="number" step="0.01" value={fmt2(r.debit)} onChange={(e)=>patch(id,{debit:Number(e.target.value||0)})}/></td>
+                  <td><button className={'type-pill '+(r.type==='Expense'?'type-exp':'type-inc')} onClick={()=>toggleType(id)}>{r.type||'Expense'}</button></td>
+                  <td className="w-cat"><select value={r.category||''} onChange={(e)=>patch(id,{category:e.target.value, subcategory:''})}><option value="">— Select —</option>{Object.keys(categories||{}).sort((a,b)=>a.localeCompare(b)).map(c=><option key={c} value={c}>{c}</option>)}</select></td>
+                  <td className="w-sub"><select value={r.subcategory||''} onChange={(e)=>patch(id,{subcategory:e.target.value})}><option value="">— Select —</option>{((categories||{})[r.category]||[]).slice().sort((a,b)=>a.localeCompare(b)).map(s=><option key={s} value={s}>{s}</option>)}</select></td>
+                  <td className="w-notes" style={{textAlign:'left'}}><input type="text" value={r.notes||''} onChange={(e)=>patch(id,{notes:e.target.value})}/></td>
+                  <td><input type="checkbox" checked={!!r.vi} onChange={(e)=>patch(id,{vi:e.target.checked})}/></td>
+                </tr>
+              );
+            }) : <tr><td colSpan="11" style={{textAlign:'center',color:'#6b7280'}}>No saved data yet.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </React.Fragment>
+  );
+}
+
+/* ---------- Summary (charts etc.) ---------- */
+function SummaryTab({past,active}){
+  const [err,setErr]=React.useState(''); const [selectedMonth,setSelectedMonth]=React.useState(''); const [subPieCat,setSubPieCat]=React.useState(''); const [expanded,setExpanded]=React.useState({});
+  const mRef=React.useRef(null), nRef=React.useRef(null), catRef=React.useRef(null), subRef=React.useRef(null);
+  const mChart=React.useRef(null), nChart=React.useRef(null), catPie=React.useRef(null), subPie=React.useRef(null);
+  const agg=React.useMemo(()=>{ var monthsSet={}, mio={}, mcd={}; (past||[]).forEach(r=>{ var m=String(Number(r.tag||0)||0); if(m==='0') return; monthsSet[m]=1; var d=Number(r.debit||0); var inc=String(r.type||'').toLowerCase()==='income'; if(!mio[m]) mio[m]={income:0,outcome:0}; if(inc) mio[m].income+=d; else mio[m].outcome+=d; if(!inc){ if(!mcd[m]) mcd[m]={}; var cat=r.category||'Uncategorized', sub=r.subcategory||'—'; if(!mcd[m][cat]) mcd[m][cat]={total:0,subcategories:{}}; mcd[m][cat].total+=d; if(!mcd[m][cat].subcategories[sub]) mcd[m][cat].subcategories[sub]=0; mcd[m][cat].subcategories[sub]+=d; }}); var months=Object.keys(monthsSet).map(Number).sort((a,b)=>a-b).map(String); var monthNet={}; months.forEach(m=>{ var io=mio[m]||{income:0,outcome:0}; monthNet[m]={net:(io.income-io.outcome),income:io.income,outcome:io.outcome}; }); var outTotals=months.map(m=> (mio[m]&&mio[m].outcome)||0 ); return {months, mcd, monthNet, outTotals}; },[past]);
+  const months=agg.months, monthCategoryData=agg.mcd, monthNet=agg.monthNet, outTotals=agg.outTotals;
+  React.useEffect(()=>{ try{ if(!months.length){ setSelectedMonth(''); setSubPieCat(''); return; } var def=selectedMonth&&months.includes(selectedMonth)?selectedMonth:months[months.length-1]; setSelectedMonth(def); var cats=Object.keys(monthCategoryData[def]||{}); setSubPieCat(prev=> (prev && cats.includes(prev))?prev:(cats[0]||'')); }catch(e){ setErr('Init error: '+e.message);} },[months.join(','), JSON.stringify(monthCategoryData)]);
+  React.useEffect(()=>{ try{
+    if(!active) return;
+    [mChart,nChart,catPie,subPie].forEach(R=>{ if(R.current && typeof R.current.destroy==='function'){ try{R.current.destroy();}catch(_){ } R.current=null; }});
+    if(!months.length) return;
+    var ChartLib=window.Chart, DLabels=window.ChartDataLabels; if(DLabels && !window.__mtDLReg){ ChartLib.register(DLabels); window.__mtDLReg=true; }
+    const common={responsive:true, maintainAspectRatio:false};
+    if(mRef.current){ const ctx=mRef.current.getContext('2d');
+    mChart.current=new ChartLib(ctx,{type:'bar',data:{labels:months,datasets:[{label:'Monthly Outcome (₪)',data:outTotals}]},options:Object.assign({},common,{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}})}); }
+    if(nRef.current){ const ctx=nRef.current.getContext('2d'); const nvals=months.map(m=>(monthNet[m]&&monthNet[m].net)||0); nChart.current=new ChartLib(ctx,{type:'bar',data:{labels:months,datasets:[{label:'Net (₪)',data:nvals}]},options:Object.assign({},common,{plugins:{legend:{display:false},datalabels:DLabels?{formatter:(v)=>'₪'+Number(v).toFixed(0),anchor:'end',align:'top',clamp:true}:{}}})}); }
+    const piePlugins={legend:{position:'right'}, datalabels:{display:false}};
+    // Custom tooltip with percentage on new line
+    function pieTooltipCallback(context) {
+      const label = context.label || '';
+      const value = context.parsed || 0;
+      const dataArr = context.chart.data.datasets[0].data;
+      const total = dataArr.reduce((a,b)=>a+b,0);
+      const percent = total ? (value/total*100) : 0;
+      return [label + ': ' + fmt2(value), fmt2(percent) + '%'];
+    }
+    const pieOptionsWithPct = Object.assign({}, common, {
+      plugins: Object.assign({}, piePlugins, {
+        tooltip: {
+          callbacks: {
+            label: pieTooltipCallback
+          }
+        }
+      })
+    });
+    if(selectedMonth && catRef.current){
+      const ctx=catRef.current.getContext('2d');
+      const mcd=monthCategoryData[selectedMonth]||{};
+      const labels=Object.keys(mcd);
+      const data=labels.map(k=>mcd[k].total);
+      catPie.current=new ChartLib(ctx,{
+        type:'pie',
+        data:{labels,datasets:[{data}]},
+        options: pieOptionsWithPct
+      });
+    }
+    if(selectedMonth && subPieCat && subRef.current){
+      const ctx=subRef.current.getContext('2d');
+      const mcd=monthCategoryData[selectedMonth]||{};
+      const subs=(mcd[subPieCat]&&mcd[subPieCat].subcategories)||{};
+      const labels=Object.keys(subs);
+      const data=labels.map(k=>subs[k]);
+      subPie.current=new ChartLib(ctx,{
+        type:'pie',
+        data:{labels,datasets:[{data}]},
+        options: pieOptionsWithPct
+      });
+    }
+  }catch(e){ setErr('Chart error: '+e.message); } },[active, months.join(','), selectedMonth, subPieCat, JSON.stringify(monthCategoryData), JSON.stringify(monthNet)]);
+  if(!(past||[]).length) return <div className="panel"><div>No data available. Upload data first.</div></div>;
+  const monthCats=Object.keys(monthCategoryData[selectedMonth]||{}).sort((a,b)=>a.localeCompare(b));
+  React.useEffect(()=>{ if(!selectedMonth) return; if(!monthCats.length){ setSubPieCat(''); return; } if(!subPieCat || !monthCats.includes(subPieCat)) setSubPieCat(monthCats[0]); },[selectedMonth, monthCats.join(',')]);
+  return (
+    <div className="panel">
+      {err && <div className="panel" style={{background:'#fff7ed',border:'1px solid #fcd19c',color:'#92400e'}}>⚠️ {err}</div>}
+      <div className="section-title">📅 Comparison Across Months</div>
+      <div style={{overflowX:'auto'}}>
+        <table>
+          <thead><tr><th>Category</th>{months.map(m=><th key={'h'+m}>{m}</th>)}</tr></thead>
+          <tbody>
+            {(function(){
+              const allCats=(function(){ var s={}; Object.keys(monthCategoryData).forEach(mm=>{ Object.keys(monthCategoryData[mm]).forEach(c=>s[c]=1); }); return Object.keys(s).sort((a,b)=>a.localeCompare(b)); })();
+              if(!allCats.length) return <tr><td colSpan={months.length+1} className="muted" style={{textAlign:'center'}}>No outcome categories yet.</td></tr>;
+              return allCats.map(cat=>{
+                const exp=!!expanded[cat];
+                return (
+                  <React.Fragment key={cat}>
+                    <tr>
+                      <td><button className="btn btn-xs" onClick={()=>setExpanded(p=>Object.assign({},p,{[cat]:!p[cat]}))}>{exp?'▾':'▸'}</button> <strong>{cat}</strong></td>
+                  {months.map(m=>{ const cell=monthCategoryData[m]&&monthCategoryData[m][cat]; const v=cell?cell.total:0; return <td key={cat+'_'+m}><strong>{v?'₪'+fmt2(v):'—'}</strong></td>; })}
+                    </tr>
+                    {exp && (function(){
+                      var subsSet={}; months.forEach(m=>{ var cell=monthCategoryData[m]&&monthCategoryData[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
+                      var subs=Object.keys(subsSet).sort((a,b)=>a.localeCompare(b));
+                      return subs.map(s=>(
+                        <tr key={cat+'__'+s}>
+                          <td className="muted" style={{paddingLeft:42}}>↳ {s}</td>
+                          {months.map(m=>{ var cell=monthCategoryData[m]&&monthCategoryData[m][cat]; var v=cell?(cell.subcategories[s]||0):0; return <td key={cat+'_'+s+'_'+m}>{v?'₪'+v.toFixed(0):'—'}</td>; })}
+                        </tr>
+                      ));
+                    })()}
+                  </React.Fragment>
+                );
+              });
+            })()}
+            <tr>
+              <td><strong>Net (Income − Outcome)</strong></td>
+          {months.map(m=> <td key={'net_'+m}><strong>{'₪'+fmt2(Number((monthNet[m]&&monthNet[m].net)||0))}</strong></td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid-2" style={{marginTop:14}}>
+        <div className="panel"><div className="section-title" style={{marginTop:0}}>📊 Monthly Outcome (₪)</div><div className="chart-box"><canvas ref={mRef}></canvas></div></div>
+        <div className="panel"><div className="section-title" style={{marginTop:0}}>📈 Monthly Net (₪)</div><div className="chart-box"><canvas ref={nRef}></canvas></div></div>
+      </div>
+
+      <div className="section-title">🔎 Details for Month</div>
+      <div className="controls" style={{marginBottom:10}}>
+        <select value={selectedMonth} onChange={(e)=>setSelectedMonth(e.target.value)}>{months.map(m=><option key={'m'+m} value={m}>{m}</option>)}</select>
+        <span className="muted">Select month (tag) to focus below</span>
+      </div>
+
+      <div style={{overflowX:'auto', marginBottom:14}}>
+        <table>
+          <thead><tr><th>Category</th><th>Total (₪)</th></tr></thead>
+          <tbody>
+            {Object.keys(monthCategoryData[selectedMonth]||{}).length? Object.keys(monthCategoryData[selectedMonth]).sort((a,b)=>a.localeCompare(b)).map(cat=>{
+              const cell=monthCategoryData[selectedMonth][cat]||{total:0,subcategories:{}}; const subs=cell.subcategories||{}; const total=cell.total||0; const key='m_'+selectedMonth+'_'+cat; const exp=!!expanded[key];
+              return (
+                <React.Fragment key={'mrow_'+cat}>
+                  <tr>
+                    <td><button className="btn btn-xs" onClick={()=>setExpanded(p=>Object.assign({},p,{[key]:!p[key]}))}>{exp?'▾':'▸'}</button> <strong>{cat}</strong></td>
+                    <td><strong>{'₪'+fmt2(total)}</strong></td>
+                  </tr>
+                  {exp && Object.keys(subs).sort((a,b)=>a.localeCompare(b)).map(s=><tr key={'mrow_'+cat+'_'+s}><td className="muted" style={{paddingLeft:42}}>↳ {s}</td><td>{'₪'+fmt2(subs[s]||0)}</td></tr>)}
+                </React.Fragment>
+              );
+            }) : <tr><td colSpan="2" style={{textAlign:'center'}} className="muted">No outcome categories in this month.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="controls" style={{marginBottom:10}}>
+        <span className="muted">Sub-category pie for category:</span>
+        <select value={subPieCat} onChange={(e)=>setSubPieCat(e.target.value)}>{monthCats.map(c=><option key={'spc_'+c} value={c}>{c}</option>)}</select>
+      </div>
+
+      <div className="grid-2">
+        <div className="panel"><div className="section-title" style={{marginTop:0}}>🧩 Categories (Outcome)</div><div className="chart-box"><canvas ref={catRef}></canvas></div></div>
+        <div className="panel"><div className="section-title" style={{marginTop:0}}>🍰 Sub-categories — {subPieCat || '—'}</div><div className="chart-box"><canvas ref={subRef}></canvas></div></div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Settings (defined BEFORE App) ---------- */
+function SettingsTab({ user, past, categories, stage, settings, onReload }){
+  const [dateFormat,setDateFormat]=React.useState(settings.dateFormat||'YYYY-MM-DD');
+  const [currency,setCurrency]=React.useState(settings.currency||'ILS');
+  React.useEffect(()=>{ setDateFormat(settings.dateFormat||'YYYY-MM-DD'); setCurrency(settings.currency||'ILS'); },[settings.dateFormat,settings.currency]);
+
+  function savePrefs(){ API.saveSettings({dateFormat,currency}).then(()=>alert('Preferences saved.')); }
+  function exportAll(){
+  const payload={ user, categories, past_data: past, current_month:stage, settings:{dateFormat,currency,theme:settings.theme||'light'} };
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`moneytron_${user}_export.json`; a.click(); URL.revokeObjectURL(a.href);
+  }
+  function onImport(e){
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    const reader=new FileReader(); reader.onload=function(){ try{ const data=JSON.parse(reader.result); API.importData({categories:data.categories,past_data:data.past_data,current_month:data.current_month,settings:data.settings}).then(()=>{ alert('Imported successfully.'); onReload&&onReload(); }); }catch(err){ alert('Invalid file: '+err.message);} };
+    reader.readAsText(f,'utf-8'); e.target.value='';
+  }
+  function clearAll(){ if(!confirm('Clear ALL data for this user? This cannot be undone.')) return; API.clearAll().then(()=>{ alert('All user data cleared.'); onReload&&onReload(); }); }
+
+  // Simple account info
+  const monthsSet={}; let lastTxVar=null, totalSpending=0;
+  (past||[]).forEach(r=>{ const d=Number(r.debit||0); if(String(r.type||'').toLowerCase()!=='income') totalSpending+=d; const m=Number(r.tag||0); if(m>0) monthsSet[m]=1; if(r.date){ if(!lastTxVar || dayjs(r.date).isAfter(dayjs(lastTxVar.date))) lastTxVar=r; }});
+  const avgMonthly=Object.keys(monthsSet).length? totalSpending/Object.keys(monthsSet).length : 0;
+  const lastTxLabel=lastTxVar ? `${lastTxVar.date} — ${lastTxVar.name}` : 'No transactions yet';
+
+  return (
+    <div className="panel">
+      <div className="section-title">⚙️ Settings &amp; Profile for {user}</div>
+      <div className="thin-underline"></div>
+      <div className="section-sub">Manage your account, data, and application preferences.</div>
+
+      <div className="grid-2">
+        <div className="panel">
+          <div className="section-title">🗂️ Data Management</div>
+          <div className="dm-grid">
+            <div className="dm-left">
+              <button className="btn" onClick={exportAll}>⬇️ Export All Data</button>
+              <label className="btn">📨 Import Data<input type="file" accept="application/json,.json" style={{display:'none'}} onChange={onImport}/></label>
+            </div>
+            <div className="dm-right">
+              <button className="btn danger" onClick={clearAll}>🧹 Clear All Data</button>
+              <div className="danger-caption">⚠️ This action cannot be undone.</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="section-title">🧩 Preferences</div>
+          <div className="controls" style={{flexDirection:'column', alignItems:'stretch'}}>
+            <label>Date Format</label>
+            <select value={dateFormat} onChange={(e)=>setDateFormat(e.target.value)}>
+              <option value="YYYY-MM-DD">YYYY-MM-DD ({dayjs().format('YYYY-MM-DD')})</option>
+              <option value="DD/MM/YYYY">DD/MM/YYYY ({dayjs().format('DD/MM/YYYY')})</option>
+              <option value="MM/DD/YYYY">MM/DD/YYYY ({dayjs().format('MM/DD/YYYY')})</option>
+            </select>
+            <label style={{marginTop:8}}>Currency</label>
+            <select value={currency} onChange={(e)=>setCurrency(e.target.value)}>
+              <option value="ILS">Israeli Shekel (₪)</option>
+              <option value="USD">US Dollar ($)</option>
+            </select>
+            <div style={{marginTop:10}}><button className="btn primary" onClick={savePrefs}>Save Preferences</button></div>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="section-title">👤 Account Info</div>
+          <div className="controls" style={{flexDirection:'column', alignItems:'flex-start'}}>
+            <div><strong>Username:</strong> {user}</div>
+            <div><strong>Avg Monthly Spending:</strong> ₪{avgMonthly.toFixed(0)}</div>
+            <div><strong>Last Transaction:</strong> {lastTxLabel}</div>
+            <div><strong>Data Storage:</strong> User-specific files</div>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="section-title">ℹ️ App Information</div>
+          <ul style={{marginTop:6}}>
+            <li>MoneyTron Multi-User v3.0</li>
+            <li>Multi-user support</li>
+            <li>Personal categories</li>
+            <li>Monthly workflow</li>
+            <li>Data visualization</li>
+            <li>Export/Import capabilities</li>
+            <li>Privacy: All data stored securely on your server.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 /* ------------------------------- App ------------------------------- */
 function App(){
@@ -875,10 +1296,10 @@ function App(){
           {tabBtn('settings','Settings','⚙️')}
         </div>
         {tab==='transactions' && <TransactionsTab rows={stage} setRows={setStage} categories={categories} onSaved={onSavedTx}/>}
-        {tab==='data' && <div className="panel">Open the Summary/Data tabs after saving to view charts.</div>}
-        {tab==='summary' && <div className="panel">Charts will appear after you have past data.</div>}
-        {tab==='categories' && <div className="panel">Categories editor unchanged.</div>}
-        {tab==='settings' && <div className="panel">Settings page unchanged.</div>}
+        {tab==='data' && <DataTab past={past} categories={categories} onSaved={reload}/>} 
+        {tab==='summary' && <SummaryTab past={past} active={tab==='summary'}/>} 
+        {tab==='categories' && <CategoriesTab user={user} categories={categories} onSaved={setCategories}/>} 
+        {tab==='settings' && <SettingsTab user={user} past={past} categories={categories} stage={stage} settings={settings} onReload={reload}/>} 
       </div>
     </div>
   );
