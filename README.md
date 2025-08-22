@@ -46,6 +46,7 @@ https://github.com/user-attachments/assets/d97ff34d-4bb7-4767-bf24-8f172e75f099
 
 ---
 
+
 ## Table of contents
 
 - [What you can do](#what-you-can-do)
@@ -56,6 +57,8 @@ https://github.com/user-attachments/assets/d97ff34d-4bb7-4767-bf24-8f172e75f099
 - [Build & package for Windows](#build--package-for-windows)
 - [For family users (how to run it)](#for-family-users-how-to-run-it)
 - [Updating the app (what-to-do-on-update)](#updating-the-app-what-to-do-on-update)
+- [Expense vs Income: How MoneyTron Handles Transaction Types](#expense-vs-income-how-moneytron-handles-transaction-types)
+- [Auto-Categorization: How MoneyTron Suggests Categories & Subcategories](#auto-categorization-how-moneytron-suggests-categories--subcategories)
 - [Troubleshooting](#troubleshooting)
 - [Data & privacy](#data--privacy)
 
@@ -346,22 +349,123 @@ MoneyTron/
 
 ---
 
+
 ## Updating the app (what-to-do-on-update)
 
 There are two common types of updates:
 
 ### 1) UI change only (`client/index.html`)
 - **Developer:** rebuild the app and send a **new zip**  
-  (Because the packaged executable embeds the `client/` folder.)
-  - macOS: run the PyInstaller command again, update `MoneyTron` + `start.command`, zip and send.
-  - Windows: run the PyInstaller command again, update `MoneyTron.exe` + `Start_MoneyTron.bat`, zip and send.
+   (Because the packaged executable embeds the `client/` folder.)
+   - macOS: run the PyInstaller command again, update `MoneyTron` + `start.command`, zip and send.
+   - Windows: run the PyInstaller command again, update `MoneyTron.exe` + `Start_MoneyTron.bat`, zip and send.
 - **Family:** delete the old folder, unzip the new one. **Keep your old `users/` folder!**  
-  If needed, copy your old `users/` into the new folder (replace the empty one).
+   If needed, copy your old `users/` into the new folder (replace the empty one).
 
 ### 2) Backend change (`server/new_app.py`)
 - Same process as above: **rebuild and send a new zip** for macOS/Windows.
 
 > **Fast patch (developers only, dev mode):** you can test changes by running `python server/new_app.py` locally without packaging. For family distribution, always rebuild.
+
+---
+
+## Expense vs Income: How MoneyTron Handles Transaction Types
+
+MoneyTron distinguishes between **Expense** and **Income** transactions throughout the app. This distinction is important for accurate summaries, charts, and category breakdowns.
+
+- **Expense:** Money going out (e.g., purchases, bills). These are shown as positive numbers in the "Debit" column and are included in spending totals.
+- **Income:** Money coming in (e.g., salary, refunds). These are shown as positive numbers in the "Debit" column but are marked as type "Income" and are included in income totals.
+
+**How the app treats Expense vs Income in each tab:**
+
+- **Transactions Tab:**
+   - Each row has a "Type" toggle (Expense/Income). By default, uploaded transactions are auto-detected (based on sign and context), but you can manually switch the type.
+   - Expenses are added to spending totals; incomes are added to income totals.
+   - The "Total Amount" and "Categorized" KPIs reflect both types, but net calculations subtract income from expenses.
+
+- **Data Tab:**
+   - You can filter and view both Expense and Income transactions.
+   - The "Total Spending" KPI only sums Expenses (not Income).
+   - You can toggle the type for any transaction if needed.
+
+- **Summary Tab:**
+   - Charts and tables show both Income and Expense per month.
+   - The "Net (Income − Outcome)" row shows the difference between total income and total expenses for each month.
+   - Category and subcategory breakdowns only include Expenses (Income is not categorized).
+
+- **Categories Tab:**
+   - Categories and subcategories are used for Expenses. Income transactions can be left uncategorized or given a category if desired, but are not included in category breakdowns.
+
+- **Settings Tab:**
+   - You can see your average monthly spending (Expenses only) and last transaction (of any type).
+
+**Note:** When uploading files, the app tries to detect the type (Expense/Income) based on the sign of the amount and the column context. You can always adjust the type manually in the Transactions or Data tabs.
+
+---
+
+
+## Multi-Currency Support: Toggle Between 4 Currencies
+
+MoneyTron lets you work with up to **four different currencies** (ILS, USD, EUR, GBP) for your transactions. You can choose which currencies are available for toggling, and easily switch the currency for any transaction in the Transactions and Data tabs.
+
+**How to enable and use multiple currencies:**
+
+1. **Go to the Settings Tab:**
+   - In the app, open the **Settings** tab (⚙️).
+   - Under **Preferences**, you'll see "Allowed Currencies for Toggling".
+
+2. **Select Your Currencies:**
+   - Click the currency buttons (ILS, USD, EUR, GBP) to enable or disable them. Enabled currencies are highlighted.
+   - You can select any combination of the four currencies.
+   - Click **Save Preferences** to apply your changes.
+
+3. **Toggle Currency in Transactions/Data:**
+   - In the **Transactions** or **Data** tab, each transaction row has a currency button (₪, $, €, £) next to the amount.
+   - Click this button to cycle through your enabled currencies for that transaction.
+   - The selected currency is saved per transaction.
+
+**Notes:**
+- The default currency is ILS, but you can change it in Settings.
+- Only the currencies you enable in Settings will be available for toggling in transaction rows.
+- Currency toggling does not convert amounts automatically; it is for tracking and labeling only.
+
+This feature is useful for users who have accounts or transactions in multiple currencies, such as ILS and USD, or for tracking foreign purchases.
+
+---
+
+MoneyTron includes a smart auto-categorization system to make organizing your transactions easier and faster. When you upload new transactions, the app tries to automatically assign the most likely **Category**, **Sub-category**, and **Type** (Expense/Income) for each row, based on your past data and category definitions.
+
+**How it works:**
+
+1. **Vendor/Name Matching:**
+    - The app normalizes the transaction name (removing noise, company suffixes, etc.) and looks for exact or similar names in your past transactions.
+    - If a match is found, it checks if the amount is similar to previous transactions for that vendor.
+
+2. **Majority Logic:**
+    - If a vendor has a clear majority of past transactions in a certain category/subcategory/type, the app will suggest those values for new transactions from the same vendor.
+    - If the amount is close to a previous transaction, the confidence is higher.
+
+3. **Fuzzy Matching:**
+    - If no exact match is found, the app uses token-based similarity to find near matches (e.g., similar store names).
+    - If a likely match is found, it suggests the most common category/subcategory/type for that vendor.
+
+4. **Validation:**
+    - The app checks that suggested subcategories exist in your current categories.json.
+    - Only confident suggestions (above a threshold) are auto-filled; others are left blank for you to choose.
+
+**Where you see auto-categorization:**
+
+- **Transactions Tab:**
+   - When you upload a file, most transactions will be auto-filled with category, subcategory, and type if a confident match is found.
+   - You can always review and change these suggestions before saving.
+
+- **Data Tab:**
+   - Past transactions are used to improve future auto-categorization. Editing and saving your data helps the system learn.
+
+- **Categories Tab:**
+   - Keeping your categories and subcategories organized helps the auto-categorization logic work better.
+
+**Tip:** The more you use MoneyTron and categorize your transactions, the smarter the auto-categorization becomes, making future uploads faster and more comfortable.
 
 ---
 

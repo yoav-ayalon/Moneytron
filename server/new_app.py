@@ -126,7 +126,11 @@ def _ensure_user_files(username: str) -> Dict[str, Path]:
         "categories": {},                                   # { "Food": ["Groceries","Dining"], ... }
         "stage": [],                                        # staging rows (Transactions tab)
         "past": [],                                         # saved rows (Data tab)
-        "settings": {"dateFormat": "YYYY-MM-DD", "currency": "ILS"},
+        "settings": {
+            "dateFormat": "YYYY-MM-DD",
+            "currency": "ILS",
+            "allowedCurrencies": ["ILS", "USD"]
+        },
     }
     if not p["categories"].exists(): _atomic_write(p["categories"], defaults["categories"])
     if not p["stage"].exists():      _atomic_write(p["stage"],      defaults["stage"])
@@ -301,7 +305,11 @@ def api_settings():
     p = _ensure_user_files(user)
 
     if request.method == "GET":
-        return jsonify(_read_json(p["settings"], {"dateFormat": "YYYY-MM-DD", "currency": "ILS"}))
+        return jsonify(_read_json(p["settings"], {
+            "dateFormat": "YYYY-MM-DD",
+            "currency": "ILS",
+            "allowedCurrencies": ["ILS", "USD"]
+        }))
 
     payload = request.get_json(force=True)
     s = payload.get("settings", {})
@@ -311,6 +319,7 @@ def api_settings():
     cur.update({
         "dateFormat": s.get("dateFormat", cur.get("dateFormat", "YYYY-MM-DD")),
         "currency":   s.get("currency",   cur.get("currency", "ILS")),
+        "allowedCurrencies": s.get("allowedCurrencies", cur.get("allowedCurrencies", ["ILS", "USD"]))
     })
     _atomic_write(p["settings"], cur)
     return jsonify({"ok": True})
