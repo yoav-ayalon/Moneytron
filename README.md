@@ -433,6 +433,8 @@ This feature is useful for users who have accounts or transactions in multiple c
 
 ---
 
+## Auto-Categorization: How MoneyTron Suggests Categories & Subcategories
+
 MoneyTron includes a smart auto-categorization system to make organizing your transactions easier and faster. When you upload new transactions, the app tries to automatically assign the most likely **Category**, **Sub-category**, and **Type** (Expense/Income) for each row, based on your past data and category definitions.
 
 **How it works:**
