@@ -999,8 +999,10 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
                   <td className="w-amt">
                     <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                       <button className="currency-toggle" onClick={()=>toggleCurrency(id)}>{currencySymbols[currency] || currency}</button>
-                      {/* Always read-only per requirement */}
-                      <input className={'locked num-input'} readOnly={true} type="text" value={fmt2(r.amount)}/>
+                      {manual
+                        ? <input className="num-input" type="text" value={r.amount_edit != null ? r.amount_edit : String(fmt2(r.amount))} onChange={e=>patch(id,{amount_edit:e.target.value})} onBlur={()=>{const amt=parseAmount(r.amount_edit!=null?r.amount_edit:r.amount);patch(id,{amount:Math.abs(amt)||0,amount_edit:undefined});}}/>
+                        : <input className={'locked num-input'} readOnly={true} type="text" value={fmt2(r.amount)}/>
+                      }
                     </div>
                   </td>
 
@@ -1219,7 +1221,11 @@ function DataTab({past,categories,onSaved}){
                   </td>
                   <td className="w-amt">
                     <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                      <button className="currency-toggle" onClick={()=>toggleCurrency(id)}>{currency==='USD'?'$':'₪'}</button>
+                      {/* Use same currency symbol logic as TransactionsTab */}
+                      {(() => {
+                        const currencySymbols = { ILS: '₪', USD: '$', EUR: '€', GBP: '£' };
+                        return <button className="currency-toggle" onClick={()=>toggleCurrency(id)}>{currencySymbols[currency] || currency}</button>;
+                      })()}
                       <input
                         className="num-input"
                         type="text"
@@ -1293,9 +1299,40 @@ function SummaryTab({past,active}){
     if(!months.length) return;
     var ChartLib=window.Chart, DLabels=window.ChartDataLabels; if(DLabels && !window.__mtDLReg){ ChartLib.register(DLabels); window.__mtDLReg=true; }
     const common={responsive:true, maintainAspectRatio:false};
-    if(mRef.current){ const ctx=mRef.current.getContext('2d');
-    mChart.current=new ChartLib(ctx,{type:'bar',data:{labels:months,datasets:[{label:'Monthly Outcome (₪)',data:outTotals}]},options:Object.assign({},common,{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}})}); }
-    if(nRef.current){ const ctx=nRef.current.getContext('2d'); const nvals=months.map(m=>(monthNet[m]&&monthNet[m].net)||0); nChart.current=new ChartLib(ctx,{type:'bar',data:{labels:months,datasets:[{label:'Net (₪)',data:nvals}]},options:Object.assign({},common,{plugins:{legend:{display:false},datalabels:DLabels?{formatter:(v)=>'₪'+Number(v).toFixed(0),anchor:'end',align:'top',clamp:true}:{}}})}); }
+    if(mRef.current){
+      const ctx=mRef.current.getContext('2d');
+      mChart.current=new ChartLib(ctx,{
+        type:'bar',
+        data:{labels:months,datasets:[{label:'Monthly Outcome (₪)',data:outTotals}]},
+        options:Object.assign({},common,{
+          plugins:{
+            legend:{display:false},
+            datalabels:DLabels?{
+              formatter:(v)=>fmt2(v),
+              anchor:'end',align:'top',clamp:true
+            }:{}
+          },
+          scales:{y:{beginAtZero:true}}
+        })
+      });
+    }
+    if(nRef.current){
+      const ctx=nRef.current.getContext('2d');
+      const nvals=months.map(m=>(monthNet[m]&&monthNet[m].net)||0);
+      nChart.current=new ChartLib(ctx,{
+        type:'bar',
+        data:{labels:months,datasets:[{label:'Net (₪)',data:nvals}]},
+        options:Object.assign({},common,{
+          plugins:{
+            legend:{display:false},
+            datalabels:DLabels?{
+              formatter:(v)=>fmt2(v),
+              anchor:'end',align:'top',clamp:true
+            }:{}
+          }
+        })
+      });
+    }
     const piePlugins={legend:{position:'right'}, datalabels:{display:false}};
     // Custom tooltip with percentage on new line
     function pieTooltipCallback(context) {
@@ -1379,7 +1416,11 @@ function SummaryTab({past,active}){
                       return subs.map(s=>(
                         <tr key={cat+'__'+s}>
                           <td className="muted" style={{paddingLeft:42}}>↳ {s}</td>
-                          {months.map(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; var v=cell?(cell.subcategories[s]||0):0; return <td key={cat+'_'+s+'_'+m}>{v?'₪'+v.toFixed(0):'—'}</td>; })}
+                          {months.map(m=>{
+                            var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat];
+                            var v=cell?(cell.subcategories[s]||0):0;
+                            return <td key={cat+'_'+s+'_'+m}>{v?'₪'+fmt2(v):'—'}</td>;
+                          })}
                         </tr>
                       ));
                     })()}
