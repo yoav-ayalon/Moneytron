@@ -1,5 +1,8 @@
 # MoneyTron V2 — README
 
+
+check for YOAVVVVVVVVVVVVVVVVV
+
 A simple, cross-platform personal finance tracker for families and friends.  
 Upload your bank/credit files, categorize transactions, and view monthly summaries — all in your browser, with **no cloud and no accounts**. Data lives in the local `users/` folder.
 
