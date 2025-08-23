@@ -1258,9 +1258,35 @@ function SummaryTab({past,active}){
   const [err,setErr]=React.useState(''); const [selectedMonth,setSelectedMonth]=React.useState(''); const [subPieCat,setSubPieCat]=React.useState(''); const [expanded,setExpanded]=React.useState({});
   const mRef=React.useRef(null), nRef=React.useRef(null), catRef=React.useRef(null), subRef=React.useRef(null);
   const mChart=React.useRef(null), nChart=React.useRef(null), catPie=React.useRef(null), subPie=React.useRef(null);
-  const agg=React.useMemo(()=>{ var monthsSet={}, mio={}, mcd={}; (past||[]).forEach(r=>{ var m=String(Number(r.tag||0)||0); if(m==='0') return; monthsSet[m]=1; var d=Number(r.debit||0); var inc=String(r.type||'').toLowerCase()==='income'; if(!mio[m]) mio[m]={income:0,outcome:0}; if(inc) mio[m].income+=d; else mio[m].outcome+=d; if(!inc){ if(!mcd[m]) mcd[m]={}; var cat=r.category||'Uncategorized', sub=r.subcategory||'—'; if(!mcd[m][cat]) mcd[m][cat]={total:0,subcategories:{}}; mcd[m][cat].total+=d; if(!mcd[m][cat].subcategories[sub]) mcd[m][cat].subcategories[sub]=0; mcd[m][cat].subcategories[sub]+=d; }}); var months=Object.keys(monthsSet).map(Number).sort((a,b)=>a-b).map(String); var monthNet={}; months.forEach(m=>{ var io=mio[m]||{income:0,outcome:0}; monthNet[m]={net:(io.income-io.outcome),income:io.income,outcome:io.outcome}; }); var outTotals=months.map(m=> (mio[m]&&mio[m].outcome)||0 ); return {months, mcd, monthNet, outTotals}; },[past]);
-  const months=agg.months, monthCategoryData=agg.mcd, monthNet=agg.monthNet, outTotals=agg.outTotals;
-  React.useEffect(()=>{ try{ if(!months.length){ setSelectedMonth(''); setSubPieCat(''); return; } var def=selectedMonth&&months.includes(selectedMonth)?selectedMonth:months[months.length-1]; setSelectedMonth(def); var cats=Object.keys(monthCategoryData[def]||{}); setSubPieCat(prev=> (prev && cats.includes(prev))?prev:(cats[0]||'')); }catch(e){ setErr('Init error: '+e.message);} },[months.join(','), JSON.stringify(monthCategoryData)]);
+  // Updated aggregation: include both income and expense categories/subcategories in mcdAll
+  const agg=React.useMemo(()=>{
+    var monthsSet={}, mio={}, mcdAll={};
+    (past||[]).forEach(r=>{
+      var m=String(Number(r.tag||0)||0); if(m==='0') return;
+      monthsSet[m]=1;
+      var d=Number(r.debit||0);
+      var inc=String(r.type||'').toLowerCase()==='income';
+      if(!mio[m]) mio[m]={income:0,outcome:0};
+      if(inc) mio[m].income+=d; else mio[m].outcome+=d;
+      // ---
+      if(!mcdAll[m]) mcdAll[m]={};
+      var cat=r.category||'Uncategorized', sub=r.subcategory||'—';
+      if(!mcdAll[m][cat]) mcdAll[m][cat]={total:0,subcategories:{}, type: inc ? 'Income' : 'Expense'};
+      mcdAll[m][cat].total += d;
+      if(!mcdAll[m][cat].subcategories[sub]) mcdAll[m][cat].subcategories[sub]=0;
+      mcdAll[m][cat].subcategories[sub] += d;
+    });
+    var months=Object.keys(monthsSet).map(Number).sort((a,b)=>a-b).map(String);
+    var monthNet={};
+    months.forEach(m=>{
+      var io=mio[m]||{income:0,outcome:0};
+      monthNet[m]={net:(io.income-io.outcome),income:io.income,outcome:io.outcome};
+    });
+    var outTotals=months.map(m=> (mio[m]&&mio[m].outcome)||0 );
+    return {months, mcdAll, monthNet, outTotals};
+  },[past]);
+  const months=agg.months, monthCategoryDataAll=agg.mcdAll, monthNet=agg.monthNet, outTotals=agg.outTotals;
+  React.useEffect(()=>{ try{ if(!months.length){ setSelectedMonth(''); setSubPieCat(''); return; } var def=selectedMonth&&months.includes(selectedMonth)?selectedMonth:months[months.length-1]; setSelectedMonth(def); var cats=Object.keys(monthCategoryDataAll[def]||{}); setSubPieCat(prev=> (prev && cats.includes(prev))?prev:(cats[0]||'')); }catch(e){ setErr('Init error: '+e.message);} },[months.join(','), JSON.stringify(monthCategoryDataAll)]);
   React.useEffect(()=>{ try{
     if(!active) return;
     [mChart,nChart,catPie,subPie].forEach(R=>{ if(R.current && typeof R.current.destroy==='function'){ try{R.current.destroy();}catch(_){ } R.current=null; }});
@@ -1291,8 +1317,9 @@ function SummaryTab({past,active}){
     });
     if(selectedMonth && catRef.current){
       const ctx=catRef.current.getContext('2d');
-      const mcd=monthCategoryData[selectedMonth]||{};
-      const labels=Object.keys(mcd);
+      const mcd=monthCategoryDataAll[selectedMonth]||{};
+      // Only outcome (expense) categories
+      const labels=Object.keys(mcd).filter(k=>(mcd[k].type||'Expense')==='Expense');
       const data=labels.map(k=>mcd[k].total);
       catPie.current=new ChartLib(ctx,{
         type:'pie',
@@ -1302,19 +1329,29 @@ function SummaryTab({past,active}){
     }
     if(selectedMonth && subPieCat && subRef.current){
       const ctx=subRef.current.getContext('2d');
-      const mcd=monthCategoryData[selectedMonth]||{};
-      const subs=(mcd[subPieCat]&&mcd[subPieCat].subcategories)||{};
-      const labels=Object.keys(subs);
-      const data=labels.map(k=>subs[k]);
-      subPie.current=new ChartLib(ctx,{
-        type:'pie',
-        data:{labels,datasets:[{data}]},
-        options: pieOptionsWithPct
-      });
+      const mcd=monthCategoryDataAll[selectedMonth]||{};
+      // Only show subcategories if parent is outcome (expense)
+      if (mcd[subPieCat] && (mcd[subPieCat].type||'Expense')==='Expense') {
+        const subs=(mcd[subPieCat]&&mcd[subPieCat].subcategories)||{};
+        const labels=Object.keys(subs);
+        const data=labels.map(k=>subs[k]);
+        subPie.current=new ChartLib(ctx,{
+          type:'pie',
+          data:{labels,datasets:[{data}]},
+          options: pieOptionsWithPct
+        });
+      } else {
+        // If not expense, show empty pie
+        subPie.current=new ChartLib(ctx,{
+          type:'pie',
+          data:{labels:[],datasets:[{data:[]}]},
+          options: pieOptionsWithPct
+        });
+      }
     }
-  }catch(e){ setErr('Chart error: '+e.message); } },[active, months.join(','), selectedMonth, subPieCat, JSON.stringify(monthCategoryData), JSON.stringify(monthNet)]);
+  }catch(e){ setErr('Chart error: '+e.message); } },[active, months.join(','), selectedMonth, subPieCat, JSON.stringify(monthCategoryDataAll), JSON.stringify(monthNet)]);
   if(!(past||[]).length) return <div className="panel"><div>No data available. Upload data first.</div></div>;
-  const monthCats=Object.keys(monthCategoryData[selectedMonth]||{}).sort((a,b)=>a.localeCompare(b));
+  const monthCats=Object.keys(monthCategoryDataAll[selectedMonth]||{}).sort((a,b)=>a.localeCompare(b));
   React.useEffect(()=>{ if(!selectedMonth) return; if(!monthCats.length){ setSubPieCat(''); return; } if(!subPieCat || !monthCats.includes(subPieCat)) setSubPieCat(monthCats[0]); },[selectedMonth, monthCats.join(',')]);
   return (
     <div className="panel">
@@ -1325,23 +1362,24 @@ function SummaryTab({past,active}){
           <thead><tr><th>Category</th>{months.map(m=><th key={'h'+m}>{m}</th>)}</tr></thead>
           <tbody>
             {(function(){
-              const allCats=(function(){ var s={}; Object.keys(monthCategoryData).forEach(mm=>{ Object.keys(monthCategoryData[mm]).forEach(c=>s[c]=1); }); return Object.keys(s).sort((a,b)=>a.localeCompare(b)); })();
-              if(!allCats.length) return <tr><td colSpan={months.length+1} className="muted" style={{textAlign:'center'}}>No outcome categories yet.</td></tr>;
+              // Show all categories (income and expense)
+              const allCats=(function(){ var s={}; Object.keys(monthCategoryDataAll).forEach(mm=>{ Object.keys(monthCategoryDataAll[mm]).forEach(c=>s[c]=1); }); return Object.keys(s).sort((a,b)=>a.localeCompare(b)); })();
+              if(!allCats.length) return <tr><td colSpan={months.length+1} className="muted" style={{textAlign:'center'}}>No categories yet.</td></tr>;
               return allCats.map(cat=>{
                 const exp=!!expanded[cat];
                 return (
                   <React.Fragment key={cat}>
                     <tr>
                       <td><button className="btn btn-xs" onClick={()=>setExpanded(p=>Object.assign({},p,{[cat]:!p[cat]}))}>{exp?'▾':'▸'}</button> <strong>{cat}</strong></td>
-                  {months.map(m=>{ const cell=monthCategoryData[m]&&monthCategoryData[m][cat]; const v=cell?cell.total:0; return <td key={cat+'_'+m}><strong>{v?'₪'+fmt2(v):'—'}</strong></td>; })}
+                      {months.map(m=>{ const cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; const v=cell?cell.total:0; return <td key={cat+'_'+m}><strong>{v?'₪'+fmt2(v):'—'}</strong></td>; })}
                     </tr>
                     {exp && (function(){
-                      var subsSet={}; months.forEach(m=>{ var cell=monthCategoryData[m]&&monthCategoryData[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
+                      var subsSet={}; months.forEach(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
                       var subs=Object.keys(subsSet).sort((a,b)=>a.localeCompare(b));
                       return subs.map(s=>(
                         <tr key={cat+'__'+s}>
                           <td className="muted" style={{paddingLeft:42}}>↳ {s}</td>
-                          {months.map(m=>{ var cell=monthCategoryData[m]&&monthCategoryData[m][cat]; var v=cell?(cell.subcategories[s]||0):0; return <td key={cat+'_'+s+'_'+m}>{v?'₪'+v.toFixed(0):'—'}</td>; })}
+                          {months.map(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; var v=cell?(cell.subcategories[s]||0):0; return <td key={cat+'_'+s+'_'+m}>{v?'₪'+v.toFixed(0):'—'}</td>; })}
                         </tr>
                       ));
                     })()}
@@ -1351,7 +1389,7 @@ function SummaryTab({past,active}){
             })()}
             <tr>
               <td><strong>Net (Income − Outcome)</strong></td>
-          {months.map(m=> <td key={'net_'+m}><strong>{'₪'+fmt2(Number((monthNet[m]&&monthNet[m].net)||0))}</strong></td>)}
+              {months.map(m=> <td key={'net_'+m}><strong>{'₪'+fmt2(Number((monthNet[m]&&monthNet[m].net)||0))}</strong></td>)}
             </tr>
           </tbody>
         </table>
@@ -1372,8 +1410,8 @@ function SummaryTab({past,active}){
         <table>
           <thead><tr><th>Category</th><th>Total (₪)</th></tr></thead>
           <tbody>
-            {Object.keys(monthCategoryData[selectedMonth]||{}).length? Object.keys(monthCategoryData[selectedMonth]).sort((a,b)=>a.localeCompare(b)).map(cat=>{
-              const cell=monthCategoryData[selectedMonth][cat]||{total:0,subcategories:{}}; const subs=cell.subcategories||{}; const total=cell.total||0; const key='m_'+selectedMonth+'_'+cat; const exp=!!expanded[key];
+            {Object.keys(monthCategoryDataAll[selectedMonth]||{}).length? Object.keys(monthCategoryDataAll[selectedMonth]).sort((a,b)=>a.localeCompare(b)).map(cat=>{
+              const cell=monthCategoryDataAll[selectedMonth][cat]||{total:0,subcategories:{}}; const subs=cell.subcategories||{}; const total=cell.total||0; const key='m_'+selectedMonth+'_'+cat; const exp=!!expanded[key];
               return (
                 <React.Fragment key={'mrow_'+cat}>
                   <tr>
@@ -1383,14 +1421,19 @@ function SummaryTab({past,active}){
                   {exp && Object.keys(subs).sort((a,b)=>a.localeCompare(b)).map(s=><tr key={'mrow_'+cat+'_'+s}><td className="muted" style={{paddingLeft:42}}>↳ {s}</td><td>{'₪'+fmt2(subs[s]||0)}</td></tr>)}
                 </React.Fragment>
               );
-            }) : <tr><td colSpan="2" style={{textAlign:'center'}} className="muted">No outcome categories in this month.</td></tr>}
+            }) : <tr><td colSpan="2" style={{textAlign:'center'}} className="muted">No categories in this month.</td></tr>}
           </tbody>
         </table>
       </div>
 
       <div className="controls" style={{marginBottom:10}}>
         <span className="muted">Sub-category pie for category:</span>
-        <select value={subPieCat} onChange={(e)=>setSubPieCat(e.target.value)}>{monthCats.map(c=><option key={'spc_'+c} value={c}>{c}</option>)}</select>
+        <select value={subPieCat} onChange={(e)=>setSubPieCat(e.target.value)}>
+          {monthCats.filter(c => {
+            const mcd = monthCategoryDataAll[selectedMonth] || {};
+            return mcd[c] && (mcd[c].type || 'Expense') === 'Expense';
+          }).map(c => <option key={'spc_'+c} value={c}>{c}</option>)}
+        </select>
       </div>
 
       <div className="grid-2">
