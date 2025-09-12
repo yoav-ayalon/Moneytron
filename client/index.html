@@ -312,7 +312,9 @@ function mapFromHeaderRow_v6(matrix, r){
   var norm = row.map(normAZ); // letters-only normalization for robust matching
   function idx(pred){ for (var i=0;i<norm.length;i++){ if (pred(norm[i], i)) return i; } return -1; }
 
-  const dateCol  = idx(x=>x.includes('תאריך')||x.includes('date'));
+    // Prefer exact Leumi "תאריך העסקה" (note: normAZ removes spaces -> 'תאריךהעסקה')
+    let dateCol  = idx(x=>x.includes('תאריךהעסקה') || x === 'תאריך');
+    if (dateCol < 0) dateCol = idx(x=>x.includes('תאריך') || x.includes('date'));
 
   // NAME / DESCRIPTION column (loose)
   let   nameCol  = idx(x=>
@@ -354,8 +356,12 @@ function findHeaderRows_v6(matrix){
     var norm=(matrix[r]||[]).map(normAZ);
     var hasDate=norm.some(x=>x.includes('תאריך')||x.includes('date'));
     var hasName=norm.some(x=>x.includes('שםביתעסק')||x.includes('שםעסק')||(x.includes('שם')&&x.includes('עסק'))||x.includes('תיאור')||x.includes('פרטים')||x.includes('תיאורפעולה')||x.includes('פרטיתנועה')||x.includes('פירוט'));
-    var hasTxn=norm.some(x=>x.includes('סכוםעסקה')|| (x.includes('עסקה')&&x.includes('סכום')));
-    var hasDeb=norm.some(x=>x.includes('סכוםחיוב')||x.includes('לתשלום')||x.includes('לחיוב')||x.includes('בשח'));
+    var hasTxn = norm.some(x =>
+    x.includes('סכוםהעסקה') || x.includes('סכוםעסקה') || (x.includes('עסקה') && x.includes('סכום'))
+    );
+    var hasDeb = norm.some(x =>
+    x.includes('סכוםהחיוב') || x.includes('סכוםחיוב') || x.includes('לתשלום') || x.includes('לחיוב') || x.includes('בשח')
+    );
     if (hasDate && (hasName || hasTxn || hasDeb)) rows.push(r);
   }
   return rows;
@@ -502,6 +508,15 @@ function extractFromSheet_v6(ws, sheetName){
       };
       lastGoodDate = null;
       continue;
+    }
+
+    // Skip any accidental header-looking row mapped as data (Hebrew/Latin text in key columns)
+    if (map && row && (
+    (map.dateCol!=null && /[A-Za-z\u0590-\u05FF]/.test(String(row[map.dateCol]||''))) &&
+    (map.nameCol!=null && /[A-Za-z\u0590-\u05FF]/.test(String(row[map.nameCol]||''))) &&
+    (map.debitCol!=null && /[A-Za-z\u0590-\u05FF]/.test(String(row[map.debitCol]||'')))
+    )) {
+    continue;
     }
 
     // (2) If we still have no map but the row looks like data → use heuristic mapping for the whole sheet
@@ -857,6 +872,7 @@ function CategoriesTab({user, categories, onSaved}){
 /* ---------- Transactions ---------- */
 function TransactionsTab({rows,setRows,categories,onSaved}){
   const [msg,setMsg]=React.useState(''); const [sortKey,setSortKey]=React.useState('date'); const [sortDir,setSortDir]=React.useState('asc');
+  const [q,setQ]=React.useState('');
   function addManual(){
     const r={ id:'m_'+Date.now(), tag:Number(dayjs().format('M')), date:dayjs().format('YYYY-MM-DD'),
       name:'', amount:0, debit:0, currency:'ILS', type:'Expense', category:'', subcategory:'', notes:'', vi:false, manual:true };
@@ -920,8 +936,51 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
   const needCat = rows.filter(r=>!r.subcategory).length; const categorized=rows.length-needCat;
   const totalSigned=rows.reduce((a,r)=>a+(r.type==='Income'?-Number(r.debit||0):Number(r.debit||0)),0);
   function setSort(k){ if(sortKey===k) setSortDir(sortDir==='asc'?'desc':'asc'); else { setSortKey(k); setSortDir('asc'); } }
-  function v(r,k){ switch(k){ case 'tag':return Number(r.tag||0); case 'date':return String(r.date||''); case 'name':return String(r.name||'').toLowerCase(); case 'amount':return Number(r.amount||0); case 'debit':return Number(r.debit||0); case 'type':return String(r.type||''); case 'category':return String(r.category||'').toLowerCase(); case 'subcategory':return String(r.subcategory||'').toLowerCase(); case 'notes':return String(r.notes||'').toLowerCase(); case 'vi':return r.vi?1:0; default:return ''; } }
-  const view=React.useMemo(()=>{ const a=rows.slice(); a.sort((x,y)=>{ const vx=v(x,sortKey), vy=v(y,sortKey); const c=(typeof vx==='number'&&typeof vy==='number')?(vx-vy):(vx<vy?-1:vx>vy?1:0); return sortDir==='asc'?c:-c; }); return a; },[rows,sortKey,sortDir]);
+  function v(r,k){ 
+    switch(k){ 
+      case 'tag':return Number(r.tag||0); 
+      case 'date':return new Date(String(r.date||'1900-01-01')); // Return Date object for proper sorting
+      case 'name':return String(r.name||'').toLowerCase(); 
+      case 'amount':return Number(r.amount||0); 
+      case 'debit':return Number(r.debit||0); 
+      case 'type':return String(r.type||''); 
+      case 'category':return String(r.category||'').toLowerCase(); 
+      case 'subcategory':return String(r.subcategory||'').toLowerCase(); 
+      case 'notes':return String(r.notes||'').toLowerCase(); 
+      case 'vi':return r.vi?1:0; 
+      default:return ''; 
+    } 
+  }
+  
+  // Enhanced search that includes numbers
+  const filtered = React.useMemo(() => {
+    const x = (q || '').trim().toLowerCase();
+    if (!x) return rows;
+    return (rows || []).filter(r => {
+      return [
+        r.date, r.name, r.notes, r.category, r.subcategory, r.tag,
+        String(r.amount||0), String(r.debit||0)
+      ].some(v => String(v == null ? '' : v).toLowerCase().includes(x));
+    });
+  }, [rows, q]);
+  
+  const view=React.useMemo(()=>{ 
+    const a=filtered.slice(); 
+    a.sort((x,y)=>{ 
+      const vx=v(x,sortKey), vy=v(y,sortKey); 
+      let c;
+      if (sortKey === 'date') {
+        // Special handling for date comparison
+        c = vx.getTime() - vy.getTime();
+      } else if (typeof vx==='number'&&typeof vy==='number') {
+        c = vx - vy;
+      } else {
+        c = vx < vy ? -1 : vx > vy ? 1 : 0;
+      }
+      return sortDir==='asc'?c:-c; 
+    }); 
+    return a; 
+  },[filtered,sortKey,sortDir]);
   function hdr(lbl,key,cls){ const ar=sortKey===key?(sortDir==='asc'?' ↑':' ↓'):' ↑↓'; return <th className={cls||''} onClick={()=>setSort(key)}>{lbl}{ar}</th>; }
 
   async function deleteAllTransactions() {
@@ -946,13 +1005,18 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
       </div>
 
       <div className="controls" style={{marginBottom:10}}>
-        <label className="btn">📁 Upload
-          <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={onUpload}/>
-        </label>
-        <button className="btn" onClick={addManual}>+ Add Manual Row</button>
-        <button className="btn danger" style={{marginLeft:10}} onClick={deleteAllTransactions}>🗑️ Delete All</button>
-        <div style={{flex:1}}></div>
-        <button className="btn primary" onClick={saveAll}>💾 Save All</button>
+        <div className="left" style={{display:'flex',alignItems:'center',gap:8}}>
+          <input className="input-xs" type="text" placeholder="Search by name, amount, notes…" value={q} onChange={(e)=>setQ(e.target.value)}/>
+          <button className="btn btn-xs" onClick={()=>setQ('')}>Clear</button>
+        </div>
+        <div className="right" style={{display:'flex',alignItems:'center',gap:8}}>
+          <label className="btn">📁 Upload
+            <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={onUpload}/>
+          </label>
+          <button className="btn" onClick={addManual}>+ Add Manual Row</button>
+          <button className="btn danger" style={{marginLeft:10}} onClick={deleteAllTransactions}>🗑️ Delete All</button>
+          <button className="btn primary" onClick={saveAll}>💾 Save All</button>
+        </div>
       </div>
 
       <div className="panel">
@@ -1089,16 +1153,45 @@ function DataTab({past,categories,onSaved}){
     const n = parseAmount(raw);
     patch(id, { debit: Math.abs(n||0), debit_edit: undefined });
   }
+  // Get unique values for dropdowns
+  const categoryOptions = React.useMemo(() => {
+    const fromData = Array.from(new Set(rows.map(r => r.category).filter(Boolean))).sort();
+    const fromCategories = Object.keys(categories || {}).sort();
+    return Array.from(new Set([...fromData, ...fromCategories]));
+  }, [rows, categories]);
+  
+  const subcategoryOptions = React.useMemo(() => {
+    const fromData = Array.from(new Set(rows.map(r => r.subcategory).filter(Boolean))).sort();
+    const fromCategories = Object.values(categories || {}).flat().filter(Boolean);
+    return Array.from(new Set([...fromData, ...fromCategories]));
+  }, [rows, categories]);
+
   function save(){ setSaving(true); API.savePast(rows).then(()=>{ setSaving(false); onSaved && onSaved(rows); alert('Past data updated.'); }).catch(e=>{ setSaving(false); alert('Save failed: '+e.message); }); }
   function setSort(k){ if(sortKey===k) setSortDir(sortDir==='asc'?'desc':'asc'); else { setSortKey(k); setSortDir('asc'); } }
-  function v(r,k){ switch(k){ case 'tag':return Number(r.tag||0); case 'date':return String(r.date||''); case 'name':return String(r.name||'').toLowerCase(); case 'amount':return Number(r.amount||0); case 'debit':return Number(r.debit||0); case 'type':return String(r.type||''); case 'category':return String(r.category||'').toLowerCase(); case 'subcategory':return String(r.subcategory||'').toLowerCase(); default:return ''; } }
+  function v(r,k){ 
+    switch(k){ 
+      case 'tag':return Number(r.tag||0); 
+      case 'date':return new Date(String(r.date||'1900-01-01')); // Return Date object for proper sorting
+      case 'name':return String(r.name||'').toLowerCase(); 
+      case 'amount':return Number(r.amount||0); 
+      case 'debit':return Number(r.debit||0); 
+      case 'type':return String(r.type||''); 
+      case 'category':return String(r.category||'').toLowerCase(); 
+      case 'subcategory':return String(r.subcategory||'').toLowerCase(); 
+      case 'notes':return String(r.notes||'').toLowerCase(); 
+      case 'vi':return r.vi?1:0; 
+      default:return ''; 
+    } 
+  }
   const filtered = React.useMemo(() => {
     const x = (q || '').trim().toLowerCase();
     return (rows || []).filter(r => {
-      // Text search (q)
+      // Enhanced text search (q) - includes numbers
       const matchText = !x || [
-        r.date, r.name, r.notes, r.category, r.subcategory, r.tag
+        r.date, r.name, r.notes, r.category, r.subcategory, r.tag,
+        String(r.amount||0), String(r.debit||0)
       ].some(v => String(v == null ? '' : v).toLowerCase().includes(x));
+      
       // Single column filter
       let matchCol = true;
       if (filterCol && filterVal.trim()) {
@@ -1127,7 +1220,23 @@ function DataTab({past,categories,onSaved}){
     });
   }, [rows, q, filterCol, filterVal, filter2Col, filter2Val]);
   // No longer need tagOptions, catOptions, subOptions, nameOptions
-  const view=React.useMemo(()=>{ const a=filtered.slice(); a.sort((x,y)=>{ const vx=v(x,sortKey), vy=v(y,sortKey); const c=(typeof vx==='number'&&typeof vy==='number')?(vx-vy):(vx<vy?-1:vx>vy?1:0); return sortDir==='asc'?c:-c; }); return a; },[filtered,sortKey,sortDir]);
+  const view=React.useMemo(()=>{ 
+    const a=filtered.slice(); 
+    a.sort((x,y)=>{ 
+      const vx=v(x,sortKey), vy=v(y,sortKey); 
+      let c;
+      if (sortKey === 'date') {
+        // Special handling for date comparison
+        c = vx.getTime() - vy.getTime();
+      } else if (typeof vx==='number'&&typeof vy==='number') {
+        c = vx - vy;
+      } else {
+        c = vx < vy ? -1 : vx > vy ? 1 : 0;
+      }
+      return sortDir==='asc'?c:-c; 
+    }); 
+    return a; 
+  },[filtered,sortKey,sortDir]);
   function hdr(lbl,key,cls){ const ar=sortKey===key?(sortDir==='asc'?' ↑':' ↓'):' ↑↓'; return <th className={cls||''} onClick={()=>setSort(key)}>{lbl}{ar}</th>; }
   return (
     <React.Fragment>
@@ -1141,7 +1250,7 @@ function DataTab({past,categories,onSaved}){
       <div className="panel" style={{marginBottom:12}}>
         <div className="toolbar" style={{gap: 18}}>
           <div className="left" style={{display:'flex',alignItems:'center',gap:8}}>
-            <input className="input-xs" type="text" placeholder="Search by name, category, notes…" value={q} onChange={(e)=>setQ(e.target.value)}/>
+            <input className="input-xs" type="text" placeholder="Search by name, amount, notes…" value={q} onChange={(e)=>setQ(e.target.value)}/>
             <button className="btn btn-xs" onClick={()=>setQ('')}>Clear</button>
           </div>
           <div className="middle" style={{display:'flex',alignItems:'center',gap:32,flexWrap:'wrap',minHeight:'64px'}}>
@@ -1158,7 +1267,20 @@ function DataTab({past,categories,onSaved}){
                     <option value="category">Category</option>
                     <option value="subcategory">Sub-category</option>
                   </select>
-                  <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Value" value={filterVal} onChange={e=>setFilterVal(e.target.value)} disabled={!filterCol}/>
+                  {(filterCol === 'category' || filterCol === 'subcategory') ? (
+                    <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                      <select className="input-xs" style={{minWidth:120,height:'40px'}} value={filterVal} onChange={e=>setFilterVal(e.target.value)} disabled={!filterCol}>
+                        <option value="">All {filterCol}s</option>
+                        {(filterCol === 'category' ? categoryOptions : subcategoryOptions).map(opt => 
+                          <option key={opt} value={opt}>{opt}</option>
+                        )}
+                      </select>
+                      <span style={{fontSize:'12px',color:'#6b7280'}}>or</span>
+                      <input className="input-xs" style={{minWidth:80,height:'40px'}} type="text" placeholder="Type…" value={filterVal} onChange={e=>setFilterVal(e.target.value)} disabled={!filterCol}/>
+                    </div>
+                  ) : (
+                    <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Value" value={filterVal} onChange={e=>setFilterVal(e.target.value)} disabled={!filterCol}/>
+                  )}
                 </div>
               </div>
               {/* Secondary */}
@@ -1172,7 +1294,20 @@ function DataTab({past,categories,onSaved}){
                     <option value="category">Category</option>
                     <option value="subcategory">Sub-category</option>
                   </select>
-                  <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Second value" value={filter2Val} onChange={e=>setFilter2Val(e.target.value)} disabled={!filter2Col || !filterCol}/>
+                  {(filter2Col === 'category' || filter2Col === 'subcategory') ? (
+                    <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                      <select className="input-xs" style={{minWidth:120,height:'40px'}} value={filter2Val} onChange={e=>setFilter2Val(e.target.value)} disabled={!filter2Col || !filterCol}>
+                        <option value="">All {filter2Col}s</option>
+                        {(filter2Col === 'category' ? categoryOptions : subcategoryOptions).map(opt => 
+                          <option key={opt} value={opt}>{opt}</option>
+                        )}
+                      </select>
+                      <span style={{fontSize:'12px',color:'#6b7280'}}>or</span>
+                      <input className="input-xs" style={{minWidth:80,height:'40px'}} type="text" placeholder="Type…" value={filter2Val} onChange={e=>setFilter2Val(e.target.value)} disabled={!filter2Col || !filterCol}/>
+                    </div>
+                  ) : (
+                    <input className="input-xs" style={{minWidth:120,height:'40px'}} type="text" placeholder="Second value" value={filter2Val} onChange={e=>setFilter2Val(e.target.value)} disabled={!filter2Col || !filterCol}/>
+                  )}
                 </div>
               </div>
             </div>
@@ -1205,8 +1340,8 @@ function DataTab({past,categories,onSaved}){
             {hdr('Type','type')}
             {hdr('Category','category','w-cat')}
             {hdr('Sub-category','subcategory','w-sub')}
-            <th className="nosort w-notes">Notes</th>
-            <th className="nosort">Vi</th>
+            {hdr('Notes','notes','w-notes')}
+            {hdr('Vi','vi')}
           </tr></thead>
           <tbody>
             {view.length? view.map((r,i)=>{
@@ -1262,9 +1397,10 @@ function DataTab({past,categories,onSaved}){
 /* ---------- Summary (charts etc.) ---------- */
 function SummaryTab({past,active}){
   const [err,setErr]=React.useState(''); const [selectedMonth,setSelectedMonth]=React.useState(''); const [subPieCat,setSubPieCat]=React.useState(''); const [expanded,setExpanded]=React.useState({});
+  const [monthRangeStart, setMonthRangeStart] = React.useState(0); // Starting index for 6-month range
   const mRef=React.useRef(null), nRef=React.useRef(null), catRef=React.useRef(null), subRef=React.useRef(null);
   const mChart=React.useRef(null), nChart=React.useRef(null), catPie=React.useRef(null), subPie=React.useRef(null);
-  // Updated aggregation: include both income and expense categories/subcategories in mcdAll
+  // Updated aggregation: properly handle income and expense categories/subcategories with correct signs
   const agg=React.useMemo(()=>{
     var monthsSet={}, mio={}, mcdAll={};
     (past||[]).forEach(r=>{
@@ -1277,10 +1413,42 @@ function SummaryTab({past,active}){
       // ---
       if(!mcdAll[m]) mcdAll[m]={};
       var cat=r.category||'Uncategorized', sub=r.subcategory||'—';
-      if(!mcdAll[m][cat]) mcdAll[m][cat]={total:0,subcategories:{}, type: inc ? 'Income' : 'Expense'};
-      mcdAll[m][cat].total += d;
-      if(!mcdAll[m][cat].subcategories[sub]) mcdAll[m][cat].subcategories[sub]=0;
-      mcdAll[m][cat].subcategories[sub] += d;
+      
+      // Initialize category structure properly for both income and expense tracking
+      if(!mcdAll[m][cat]) mcdAll[m][cat]={
+        total:0, 
+        incomeTotal:0, 
+        expenseTotal:0, 
+        subcategories:{}, 
+        type: inc ? 'Income' : 'Expense'
+      };
+      
+      // Track both totals separately
+      if(inc) {
+        mcdAll[m][cat].incomeTotal += d;
+      } else {
+        mcdAll[m][cat].expenseTotal += d;
+      }
+      
+      // Net total with correct signs: income positive, expense negative
+      mcdAll[m][cat].total = mcdAll[m][cat].incomeTotal - mcdAll[m][cat].expenseTotal;
+      
+      // Set type based on which amount is larger
+      if(mcdAll[m][cat].incomeTotal > mcdAll[m][cat].expenseTotal) {
+        mcdAll[m][cat].type = 'Income';
+      } else if(mcdAll[m][cat].expenseTotal > mcdAll[m][cat].incomeTotal) {
+        mcdAll[m][cat].type = 'Expense';
+      }
+      
+      if(!mcdAll[m][cat].subcategories[sub]) mcdAll[m][cat].subcategories[sub] = {total:0, incomeTotal:0, expenseTotal:0};
+      
+      if(inc) {
+        mcdAll[m][cat].subcategories[sub].incomeTotal += d;
+      } else {
+        mcdAll[m][cat].subcategories[sub].expenseTotal += d;
+      }
+      // Net total with correct signs for subcategories too
+      mcdAll[m][cat].subcategories[sub].total = mcdAll[m][cat].subcategories[sub].incomeTotal - mcdAll[m][cat].subcategories[sub].expenseTotal;
     });
     var months=Object.keys(monthsSet).map(Number).sort((a,b)=>a-b).map(String);
     var monthNet={};
@@ -1292,6 +1460,29 @@ function SummaryTab({past,active}){
     return {months, mcdAll, monthNet, outTotals};
   },[past]);
   const months=agg.months, monthCategoryDataAll=agg.mcdAll, monthNet=agg.monthNet, outTotals=agg.outTotals;
+  
+  // Calculate visible months (last 6 or all if fewer than 6)
+  const maxDisplayMonths = 6;
+  const totalMonths = months.length;
+  const displayMonths = React.useMemo(() => {
+    if (totalMonths <= maxDisplayMonths) {
+      return months; // Show all months if 6 or fewer
+    }
+    
+    // Calculate the slice based on monthRangeStart
+    const startIdx = Math.max(0, Math.min(monthRangeStart, totalMonths - maxDisplayMonths));
+    return months.slice(startIdx, startIdx + maxDisplayMonths);
+  }, [months, monthRangeStart, totalMonths]);
+  
+  // Update monthRangeStart to show most recent months by default
+  React.useEffect(() => {
+    if (totalMonths > maxDisplayMonths && monthRangeStart === 0) {
+      setMonthRangeStart(totalMonths - maxDisplayMonths);
+    }
+  }, [totalMonths, monthRangeStart]);
+  
+  const canNavigatePrev = monthRangeStart > 0;
+  const canNavigateNext = monthRangeStart < totalMonths - maxDisplayMonths;
   React.useEffect(()=>{ try{ if(!months.length){ setSelectedMonth(''); setSubPieCat(''); return; } var def=selectedMonth&&months.includes(selectedMonth)?selectedMonth:months[months.length-1]; setSelectedMonth(def); var cats=Object.keys(monthCategoryDataAll[def]||{}); setSubPieCat(prev=> (prev && cats.includes(prev))?prev:(cats[0]||'')); }catch(e){ setErr('Init error: '+e.message);} },[months.join(','), JSON.stringify(monthCategoryDataAll)]);
   React.useEffect(()=>{ try{
     if(!active) return;
@@ -1371,7 +1562,10 @@ function SummaryTab({past,active}){
       if (mcd[subPieCat] && (mcd[subPieCat].type||'Expense')==='Expense') {
         const subs=(mcd[subPieCat]&&mcd[subPieCat].subcategories)||{};
         const labels=Object.keys(subs);
-        const data=labels.map(k=>subs[k]);
+        const data=labels.map(k=>{
+          const subData = subs[k];
+          return typeof subData === 'number' ? subData : subData.total;
+        });
         subPie.current=new ChartLib(ctx,{
           type:'pie',
           data:{labels,datasets:[{data}]},
@@ -1394,32 +1588,70 @@ function SummaryTab({past,active}){
     <div className="panel">
       {err && <div className="panel" style={{background:'#fff7ed',border:'1px solid #fcd19c',color:'#92400e'}}>⚠️ {err}</div>}
       <div className="section-title">📅 Comparison Across Months</div>
+      {totalMonths > maxDisplayMonths && (
+        <div className="controls" style={{marginBottom:10}}>
+          <button 
+            className="btn btn-xs" 
+            onClick={() => setMonthRangeStart(Math.max(0, monthRangeStart - maxDisplayMonths))}
+            disabled={!canNavigatePrev}
+          >
+            ← Previous {maxDisplayMonths}
+          </button>
+          <span className="muted" style={{margin: '0 12px'}}>
+            Showing months {displayMonths[0]} to {displayMonths[displayMonths.length-1]} 
+            ({displayMonths.length} of {totalMonths} total)
+          </span>
+          <button 
+            className="btn btn-xs" 
+            onClick={() => setMonthRangeStart(Math.min(totalMonths - maxDisplayMonths, monthRangeStart + maxDisplayMonths))}
+            disabled={!canNavigateNext}
+          >
+            Next {maxDisplayMonths} →
+          </button>
+          <button 
+            className="btn btn-xs" 
+            onClick={() => setMonthRangeStart(totalMonths - Math.min(maxDisplayMonths, totalMonths))}
+            style={{marginLeft: 8}}
+          >
+            Latest
+          </button>
+        </div>
+      )}
       <div style={{overflowX:'auto'}}>
         <table>
-          <thead><tr><th>Category</th>{months.map(m=><th key={'h'+m}>{m}</th>)}</tr></thead>
+          <thead><tr><th>Category</th>{displayMonths.map(m=><th key={'h'+m}>{m}</th>)}</tr></thead>
           <tbody>
             {(function(){
               // Show all categories (income and expense)
               const allCats=(function(){ var s={}; Object.keys(monthCategoryDataAll).forEach(mm=>{ Object.keys(monthCategoryDataAll[mm]).forEach(c=>s[c]=1); }); return Object.keys(s).sort((a,b)=>a.localeCompare(b)); })();
-              if(!allCats.length) return <tr><td colSpan={months.length+1} className="muted" style={{textAlign:'center'}}>No categories yet.</td></tr>;
+              if(!allCats.length) return <tr><td colSpan={displayMonths.length+1} className="muted" style={{textAlign:'center'}}>No categories yet.</td></tr>;
               return allCats.map(cat=>{
                 const exp=!!expanded[cat];
                 return (
                   <React.Fragment key={cat}>
                     <tr>
                       <td><button className="btn btn-xs" onClick={()=>setExpanded(p=>Object.assign({},p,{[cat]:!p[cat]}))}>{exp?'▾':'▸'}</button> <strong>{cat}</strong></td>
-                      {months.map(m=>{ const cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; const v=cell?cell.total:0; return <td key={cat+'_'+m}><strong>{v?'₪'+fmt2(v):'—'}</strong></td>; })}
+                      {displayMonths.map(m=>{ 
+                        const cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; 
+                        const v=cell?cell.total:0; 
+                        const isPositive = v > 0;
+                        const displayValue = v !== 0 ? (isPositive ? '+' : '') + '₪' + fmt2(Math.abs(v)) : '—';
+                        return <td key={cat+'_'+m}><strong style={{color: v > 0 ? '#16a34a' : v < 0 ? '#dc2626' : 'inherit'}}>{displayValue}</strong></td>; 
+                      })}
                     </tr>
                     {exp && (function(){
-                      var subsSet={}; months.forEach(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
+                      var subsSet={}; displayMonths.forEach(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
                       var subs=Object.keys(subsSet).sort((a,b)=>a.localeCompare(b));
                       return subs.map(s=>(
                         <tr key={cat+'__'+s}>
                           <td className="muted" style={{paddingLeft:42}}>↳ {s}</td>
-                          {months.map(m=>{
+                          {displayMonths.map(m=>{
                             var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat];
-                            var v=cell?(cell.subcategories[s]||0):0;
-                            return <td key={cat+'_'+s+'_'+m}>{v?'₪'+fmt2(v):'—'}</td>;
+                            var subData=cell?(cell.subcategories[s]||{total:0}):0;
+                            var v = typeof subData === 'number' ? subData : subData.total;
+                            const isPositive = v > 0;
+                            const displayValue = v !== 0 ? (isPositive ? '+' : '') + '₪' + fmt2(Math.abs(v)) : '—';
+                            return <td key={cat+'_'+s+'_'+m} style={{color: v > 0 ? '#16a34a' : v < 0 ? '#dc2626' : 'inherit'}}>{displayValue}</td>;
                           })}
                         </tr>
                       ));
@@ -1430,7 +1662,12 @@ function SummaryTab({past,active}){
             })()}
             <tr>
               <td><strong>Net (Income − Outcome)</strong></td>
-              {months.map(m=> <td key={'net_'+m}><strong>{'₪'+fmt2(Number((monthNet[m]&&monthNet[m].net)||0))}</strong></td>)}
+              {displayMonths.map(m=> {
+                const netValue = Number((monthNet[m]&&monthNet[m].net)||0);
+                const isPositive = netValue > 0;
+                const displayValue = netValue !== 0 ? (isPositive ? '+' : '') + '₪' + fmt2(Math.abs(netValue)) : '₪0.00';
+                return <td key={'net_'+m}><strong style={{color: netValue > 0 ? '#16a34a' : netValue < 0 ? '#dc2626' : 'inherit'}}>{displayValue}</strong></td>;
+              })}
             </tr>
           </tbody>
         </table>
@@ -1457,12 +1694,30 @@ function SummaryTab({past,active}){
                 <React.Fragment key={'mrow_'+cat}>
                   <tr>
                     <td><button className="btn btn-xs" onClick={()=>setExpanded(p=>Object.assign({},p,{[key]:!p[key]}))}>{exp?'▾':'▸'}</button> <strong>{cat}</strong></td>
-                    <td><strong>{'₪'+fmt2(total)}</strong></td>
+                    <td><strong style={{color: total > 0 ? '#16a34a' : total < 0 ? '#dc2626' : 'inherit'}}>
+                      {total !== 0 ? (total > 0 ? '+' : '') + '₪' + fmt2(Math.abs(total)) : '₪0.00'}
+                    </strong></td>
                   </tr>
-                  {exp && Object.keys(subs).sort((a,b)=>a.localeCompare(b)).map(s=><tr key={'mrow_'+cat+'_'+s}><td className="muted" style={{paddingLeft:42}}>↳ {s}</td><td>{'₪'+fmt2(subs[s]||0)}</td></tr>)}
+                  {exp && Object.keys(subs).sort((a,b)=>a.localeCompare(b)).map(s=>{
+                    var subData = subs[s];
+                    var subValue = typeof subData === 'number' ? subData : subData.total;
+                    const displayValue = subValue !== 0 ? (subValue > 0 ? '+' : '') + '₪' + fmt2(Math.abs(subValue)) : '₪0.00';
+                    return <tr key={'mrow_'+cat+'_'+s}><td className="muted" style={{paddingLeft:42}}>↳ {s}</td><td style={{color: subValue > 0 ? '#16a34a' : subValue < 0 ? '#dc2626' : 'inherit'}}>{displayValue}</td></tr>;
+                  })}
                 </React.Fragment>
               );
             }) : <tr><td colSpan="2" style={{textAlign:'center'}} className="muted">No categories in this month.</td></tr>}
+            {selectedMonth && (monthNet[selectedMonth] || Object.keys(monthCategoryDataAll[selectedMonth]||{}).length) && (
+              <tr style={{borderTop: '2px solid #e5e7eb', backgroundColor: '#f9fafb'}}>
+                <td><strong>Net (Income - Expenses)</strong></td>
+                <td><strong style={{color: (monthNet[selectedMonth]&&monthNet[selectedMonth].net||0) > 0 ? '#16a34a' : (monthNet[selectedMonth]&&monthNet[selectedMonth].net||0) < 0 ? '#dc2626' : 'inherit'}}>
+                  {(() => {
+                    const netValue = Number((monthNet[selectedMonth]&&monthNet[selectedMonth].net)||0);
+                    return netValue !== 0 ? (netValue > 0 ? '+' : '') + '₪' + fmt2(Math.abs(netValue)) : '₪0.00';
+                  })()}
+                </strong></td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
