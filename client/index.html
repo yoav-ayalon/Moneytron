@@ -1588,11 +1588,20 @@ function SummaryTab({past,active}){
   const mRef=React.useRef(null), nRef=React.useRef(null), catRef=React.useRef(null), subRef=React.useRef(null);
   const mChart=React.useRef(null), nChart=React.useRef(null), catPie=React.useRef(null), subPie=React.useRef(null);
   // Updated aggregation: properly handle income and expense categories/subcategories with correct signs
+  // Use tag/year combination as the key (e.g., "7/25" for July 2025)
   const agg=React.useMemo(()=>{
     var monthsSet={}, mio={}, mcdAll={};
     (past||[]).forEach(r=>{
-      var m=String(Number(r.tag||0)||0); if(m==='0') return;
-      monthsSet[m]=1;
+      var tag=Number(r.tag||0)||Number(r.month_tag||0);
+      var year=Number(r.year||dayjs().year());
+      if(tag===0) return;
+      
+      // Create month key as "tag/year" (e.g., "7/25" for July 2025)
+      var m = tag + '/' + String(year).slice(-2);
+      var sortKey = year * 100 + tag; // For proper sorting (e.g., 202507 for July 2025)
+      
+      if(!monthsSet[m]) monthsSet[m] = sortKey;
+      
       var d=Number(r.debit||0);
       var inc=String(r.type||'').toLowerCase()==='income';
       if(!mio[m]) mio[m]={income:0,outcome:0};
@@ -1637,7 +1646,10 @@ function SummaryTab({past,active}){
       // Net total with correct signs for subcategories too
       mcdAll[m][cat].subcategories[sub].total = mcdAll[m][cat].subcategories[sub].incomeTotal - mcdAll[m][cat].subcategories[sub].expenseTotal;
     });
-    var months=Object.keys(monthsSet).map(Number).sort((a,b)=>a-b).map(String);
+    
+    // Sort months by year and tag (chronologically)
+    var months=Object.keys(monthsSet).sort((a,b)=> monthsSet[a] - monthsSet[b]);
+    
     var monthNet={};
     months.forEach(m=>{
       var io=mio[m]||{income:0,outcome:0};
@@ -1872,17 +1884,20 @@ function SummaryTab({past,active}){
               });
             })()}
             <tr style={{
-              borderTop: '3px solid #6b46c1', 
-              backgroundColor: '#f3f4f6',
-              boxShadow: '0 2px 8px rgba(107, 70, 193, 0.15)'
+              borderTop: '4px double #6b46c1',
+              borderBottom: '4px double #6b46c1',
+              backgroundColor: '#fde047',
+              boxShadow: '0 4px 12px rgba(234, 179, 8, 0.3)',
+              transform: 'scale(1.01)'
             }}>
-              <td><strong style={{fontSize: '16px', color: '#2b2f42'}}>Net (Income − Expenses)</strong></td>
+              <td style={{backgroundColor: '#fde047', padding: '14px'}}><strong style={{fontSize: '17px', fontWeight: '800', color: '#1f1b2e'}}>Net (Income − Expenses)</strong></td>
               {displayMonths.map(m=> {
                 const netValue = Number((monthNet[m]&&monthNet[m].net)||0);
                 const isPositive = netValue > 0;
                 const displayValue = netValue !== 0 ? (isPositive ? '+' : '') + '₪' + fmt2(Math.abs(netValue)) : '₪0.00';
-                return <td key={'net_'+m}><strong style={{
-                  fontSize: '15px',
+                return <td key={'net_'+m} style={{backgroundColor: '#fde047', padding: '14px'}}><strong style={{
+                  fontSize: '16px',
+                  fontWeight: '800',
                   color: netValue > 0 ? '#16a34a' : netValue < 0 ? '#dc2626' : '#6b7280'
                 }}>{displayValue}</strong></td>;
               })}
