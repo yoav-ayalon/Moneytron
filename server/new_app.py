@@ -370,6 +370,277 @@ def api_clear_all():
     return jsonify({"ok": True})
 
 # =============================================================================
+# Statistics endpoints
+# =============================================================================
+@app.route("/api/statistics/summary", methods=["POST"])
+def api_statistics_summary():
+    """Calculate Mean, Max, Min for filtered transactions"""
+    user = _require_user()
+    p = _ensure_user_files(user)
+    
+    payload = request.get_json(force=True)
+    tags = payload.get("tags", [])  # list of month numbers
+    years = payload.get("years", [])  # list of years
+    category = payload.get("category", "")
+    subcategories = payload.get("subcategories", [])
+    tx_type = payload.get("type", "All")  # "Expense" | "Income" | "All"
+    
+    past = _read_json(p["past"], [])
+    
+    # Filter transactions
+    filtered = []
+    for tx in past:
+        if not isinstance(tx, dict):
+            continue
+        
+        # Filter by tag/month
+        tx_tag = tx.get("month_tag") or tx.get("tag")
+        if tags and tx_tag not in tags:
+            continue
+        
+        # Filter by year
+        tx_year = tx.get("year")
+        if years and tx_year not in years:
+            continue
+        
+        # Filter by type
+        if tx_type != "All":
+            if tx.get("type") != tx_type:
+                continue
+        
+        # Filter by category
+        if category and tx.get("category") != category:
+            continue
+        
+        # Filter by subcategory
+        if subcategories and tx.get("subcategory") not in subcategories:
+            continue
+        
+        filtered.append(tx)
+    
+    # Calculate statistics
+    if not filtered:
+        return jsonify({"mean": 0, "max": 0, "min": 0, "count": 0})
+    
+    amounts = [abs(float(tx.get("debit", 0))) for tx in filtered]
+    return jsonify({
+        "mean": sum(amounts) / len(amounts) if amounts else 0,
+        "max": max(amounts) if amounts else 0,
+        "min": min(amounts) if amounts else 0,
+        "count": len(filtered)
+    })
+
+
+@app.route("/api/statistics/per_tag_means", methods=["POST"])
+def api_statistics_per_tag_means():
+    """Calculate mean expenses per selected tag"""
+    user = _require_user()
+    p = _ensure_user_files(user)
+    
+    payload = request.get_json(force=True)
+    tags = payload.get("tags", [])
+    years = payload.get("years", [])
+    category = payload.get("category", "")
+    subcategories = payload.get("subcategories", [])
+    tx_type = payload.get("type", "Expense")
+    
+    past = _read_json(p["past"], [])
+    
+    # Group by tag
+    by_tag = {}
+    for tx in past:
+        if not isinstance(tx, dict):
+            continue
+        
+        tx_tag = tx.get("month_tag") or tx.get("tag")
+        tx_year = tx.get("year")
+        
+        # Apply filters
+        if tags and tx_tag not in tags:
+            continue
+        if years and tx_year not in years:
+            continue
+        if tx_type != "All" and tx.get("type") != tx_type:
+            continue
+        if category and tx.get("category") != category:
+            continue
+        if subcategories and tx.get("subcategory") not in subcategories:
+            continue
+        
+        if tx_tag not in by_tag:
+            by_tag[tx_tag] = []
+        by_tag[tx_tag].append(abs(float(tx.get("debit", 0))))
+    
+    # Calculate means
+    result = []
+    for tag, amounts in sorted(by_tag.items()):
+        result.append({
+            "tag": tag,
+            "mean": sum(amounts) / len(amounts) if amounts else 0,
+            "count": len(amounts)
+        })
+    
+    # Add combined mean
+    all_amounts = [amt for amounts in by_tag.values() for amt in amounts]
+    combined_mean = sum(all_amounts) / len(all_amounts) if all_amounts else 0
+    
+    return jsonify({
+        "per_tag": result,
+        "combined_mean": combined_mean
+    })
+
+
+@app.route("/api/statistics/category_last3_mean", methods=["POST"])
+def api_statistics_category_last3_mean():
+    """Calculate mean for a category over the last 3 months with data"""
+    user = _require_user()
+    p = _ensure_user_files(user)
+    
+    payload = request.get_json(force=True)
+    category = payload.get("category", "")
+    
+    if not category:
+        return jsonify({"months": [], "means": []})
+    
+    past = _read_json(p["past"], [])
+    
+    # Group by tag for the selected category
+    by_tag = {}
+    for tx in past:
+        if not isinstance(tx, dict):
+            continue
+        if tx.get("category") != category:
+            continue
+        
+        tx_tag = tx.get("month_tag") or tx.get("tag")
+        if not tx_tag:
+            continue
+        
+        if tx_tag not in by_tag:
+            by_tag[tx_tag] = []
+        by_tag[tx_tag].append(abs(float(tx.get("debit", 0))))
+    
+    # Get last 3 months with data
+    sorted_tags = sorted(by_tag.keys(), reverse=True)[:3]
+    sorted_tags.reverse()  # chronological order
+    
+    result = []
+    for tag in sorted_tags:
+        amounts = by_tag[tag]
+        result.append({
+            "tag": tag,
+            "mean": sum(amounts) / len(amounts) if amounts else 0
+        })
+    
+    return jsonify({"data": result})
+
+
+@app.route("/api/statistics/income_means", methods=["POST"])
+def api_statistics_income_means():
+    """Calculate mean income grouped by category and subcategory"""
+    user = _require_user()
+    p = _ensure_user_files(user)
+    
+    payload = request.get_json(force=True)
+    tags = payload.get("tags", [])
+    years = payload.get("years", [])
+    
+    past = _read_json(p["past"], [])
+    
+    # Group by category -> subcategory
+    by_cat_sub = {}
+    for tx in past:
+        if not isinstance(tx, dict):
+            continue
+        if tx.get("type") != "Income":
+            continue
+        
+        tx_tag = tx.get("month_tag") or tx.get("tag")
+        tx_year = tx.get("year")
+        
+        if tags and tx_tag not in tags:
+            continue
+        if years and tx_year not in years:
+            continue
+        
+        cat = tx.get("category", "Uncategorized")
+        sub = tx.get("subcategory", "—")
+        
+        key = (cat, sub)
+        if key not in by_cat_sub:
+            by_cat_sub[key] = []
+        by_cat_sub[key].append(abs(float(tx.get("debit", 0))))
+    
+    # Calculate means
+    result = []
+    for (cat, sub), amounts in sorted(by_cat_sub.items()):
+        result.append({
+            "category": cat,
+            "subcategory": sub,
+            "mean": sum(amounts) / len(amounts) if amounts else 0,
+            "count": len(amounts)
+        })
+    
+    # Overall mean
+    all_amounts = [amt for amounts in by_cat_sub.values() for amt in amounts]
+    overall_mean = sum(all_amounts) / len(all_amounts) if all_amounts else 0
+    
+    return jsonify({
+        "breakdown": result,
+        "overall_mean": overall_mean
+    })
+
+
+@app.route("/api/statistics/rollup", methods=["POST"])
+def api_statistics_rollup():
+    """Table showing totals, means, and counts per tag×year combination"""
+    user = _require_user()
+    p = _ensure_user_files(user)
+    
+    payload = request.get_json(force=True)
+    tags = payload.get("tags", [])
+    years = payload.get("years", [])
+    tx_type = payload.get("type", "All")
+    
+    past = _read_json(p["past"], [])
+    
+    # Group by (year, tag)
+    by_year_tag = {}
+    for tx in past:
+        if not isinstance(tx, dict):
+            continue
+        
+        tx_tag = tx.get("month_tag") or tx.get("tag")
+        tx_year = tx.get("year")
+        tx_tx_type = tx.get("type", "Expense")
+        
+        if tags and tx_tag not in tags:
+            continue
+        if years and tx_year not in years:
+            continue
+        if tx_type != "All" and tx_tx_type != tx_type:
+            continue
+        
+        key = (tx_year, tx_tag)
+        if key not in by_year_tag:
+            by_year_tag[key] = []
+        by_year_tag[key].append(abs(float(tx.get("debit", 0))))
+    
+    # Build result table
+    result = []
+    for (year, tag), amounts in sorted(by_year_tag.items()):
+        result.append({
+            "year": year,
+            "tag": tag,
+            "total": sum(amounts),
+            "mean": sum(amounts) / len(amounts) if amounts else 0,
+            "count": len(amounts)
+        })
+    
+    return jsonify({"data": result})
+
+
+# =============================================================================
 # Entrypoint
 # =============================================================================
 def _port() -> int:
