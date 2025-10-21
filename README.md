@@ -1,7 +1,7 @@
-# MoneyTron V2 — README
+# MoneyTron v4.0 — README
 
-
-check for YOAVVVVVVVVVVVVVVVVV
+**🆕 Major Update: October 2025**  
+MoneyTron v4.0 introduces a powerful Statistics Dashboard, unified DD-MM-YYYY date format, improved navigation, and enhanced auto-categorization. See [UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md) for complete details.
 
 A simple, cross-platform personal finance tracker for families and friends.  
 Upload your bank/credit files, categorize transactions, and view monthly summaries — all in your browser, with **no cloud and no accounts**. Data lives in the local `users/` folder.
@@ -21,11 +21,8 @@ Below are screenshots of MoneyTron in action (see the `screenshots/` folder for 
 **Categories Tab**
 ![Categories Tab](screenshots/catagories%20tab.png)
 
-**Settings Tab**
-![Settings Tab](screenshots/settings%20tab.png)
-
-**Summary Tab (no data)**
-![Summary Tab No Data](screenshots/summary%20tab%20nd%20image.png)
+**Statistics Tab** 🆕
+*A powerful analytics dashboard with filtering and insights.*
 
 **Summary Tab (with data)**
 ![Summary Tab With Data](screenshots/summary%20tab%20st%20image.png)
@@ -52,6 +49,7 @@ https://github.com/user-attachments/assets/d97ff34d-4bb7-4767-bf24-8f172e75f099
 
 ## Table of contents
 
+- [What's New in v4.0](#whats-new-in-v40)
 - [What you can do](#what-you-can-do)
 - [Project structure](#project-structure)
 - [How it works (high-level)](#how-it-works-high-level)
@@ -67,12 +65,57 @@ https://github.com/user-attachments/assets/d97ff34d-4bb7-4767-bf24-8f172e75f099
 
 ---
 
+## What's New in v4.0
+
+### 📈 Statistics Dashboard (replaces Settings tab)
+- **Comprehensive filtering** by tags (months), years, categories, subcategories, and type
+- **KPI cards** showing Mean, Max, Min, and transaction count
+- **Per-tag analysis** with means across selected months
+- **Income breakdown** by category and subcategory
+- **Rollup tables** showing totals, means, and counts
+- **Quick filters:** Last 3/6 months, Year-to-date (YTD)
+- **CSV export** for external analysis
+
+### 📅 DD-MM-YYYY Date Format Everywhere
+- All dates now display as **DD-MM-YYYY** consistently
+- Automatic conversion on import (supports multiple input formats)
+- No more YYYY-MM-DD confusion
+- New fields: `date_iso`, `date_str`, `year`, `month_tag`
+
+### 🔧 Improved Transaction Upload
+- **Automatic year and month detection** from dates
+- **No manual tag entry** required
+- Upload summary shows: rows imported, years detected, validation errors
+- Enhanced auto-categorization confidence
+
+### 📊 Enhanced Summary Tab
+- Navigate **1 month at a time** (was 6 months)
+- **Visual separation** for net totals row with purple border
+- **Hides empty categories** automatically for cleaner view
+- Better color coding (green for income, red for expenses)
+
+### 🎯 Simplified Data Tab
+- Streamlined to **3 KPI cards** (removed Total Spending)
+- Focus on: Total Transactions, Categories, Active Months
+- Cleaner, more focused interface
+
+### 🐛 Bug Fixes
+- **Fixed tag assignment:** Tags now correctly based on date only
+- **Fixed date parsing:** Better handling of various date formats
+- **Fixed category filtering:** Improved multi-level filtering
+
+For complete details, see [UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md) and [QUICK_START.md](QUICK_START.md).
+
+---
+
 ## What you can do
 
 - **Multi-user:** each person has their own folder under `users/<Name>/`.
 - **Transactions:** upload monthly bank/credit files (CSV/XLSX; Hebrew headers supported), review & categorize.
 - **Manual add:** add single transactions if needed.
-- **Summary:** view totals by category/month and make finance conclusions.
+- **Summary:** view totals by category/month with enhanced navigation and visual clarity.
+- **Statistics:** 🆕 Powerful analytics dashboard with filtering, KPIs, and export capabilities.
+- **Data management:** Edit historical transactions with advanced filtering.
 - **No internet required:** everything runs locally at `http://127.0.0.1:5003/`.
 
 ---

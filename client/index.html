@@ -155,6 +155,52 @@
 const MT_DEBUG = true;
 function fmt2(n){ n=Number(n); if(!isFinite(n)) return '0.00'; return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 
+// Format date as DD-MM-YYYY consistently everywhere
+function formatDMY(dateInput) {
+  if (!dateInput) return '';
+  let d;
+  
+  // Handle various input formats
+  if (typeof dateInput === 'string') {
+    // If already in DD-MM-YYYY format, return as-is
+    if (/^\d{2}-\d{2}-\d{4}$/.test(dateInput)) {
+      return dateInput;
+    }
+    // Parse ISO format YYYY-MM-DD to DD-MM-YYYY
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+      const [y, m, day] = dateInput.split('-');
+      return `${day}-${m}-${y}`;
+    }
+    // Try parsing with dayjs
+    d = dayjs(dateInput);
+  } else if (dateInput instanceof Date) {
+    d = dayjs(dateInput);
+  } else {
+    d = dayjs(dateInput);
+  }
+  
+  if (d && d.isValid()) {
+    return d.format('DD-MM-YYYY');
+  }
+  return String(dateInput);
+}
+
+// Parse DD-MM-YYYY to ISO YYYY-MM-DD for storage
+function parseDMYtoISO(dmyStr) {
+  if (!dmyStr) return '';
+  const match = String(dmyStr).match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (match) {
+    const [, day, month, year] = match;
+    return `${year}-${month}-${day}`;
+  }
+  // Try to parse with dayjs if not in DD-MM-YYYY format
+  const d = dayjs(dmyStr, 'DD-MM-YYYY', true);
+  if (d.isValid()) {
+    return d.format('YYYY-MM-DD');
+  }
+  return dmyStr;
+}
+
 var API=(function(){
   var base='/api';
   function j(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
@@ -176,6 +222,12 @@ var API=(function(){
     saveSettings:(settings)=>f('POST','/settings',{settings}).then(j),
     importData:(payload)=>f('POST','/import',payload).then(j),
     clearAll:()=>f('POST','/clear-all').then(j),
+    // Statistics endpoints
+    statsSummary:(filters)=>f('POST','/statistics/summary',filters).then(j),
+    statsPerTagMeans:(filters)=>f('POST','/statistics/per_tag_means',filters).then(j),
+    statsCategoryLast3:(filters)=>f('POST','/statistics/category_last3_mean',filters).then(j),
+    statsIncomeMeans:(filters)=>f('POST','/statistics/income_means',filters).then(j),
+    statsRollup:(filters)=>f('POST','/statistics/rollup',filters).then(j),
   };
 })();
 
@@ -430,8 +482,37 @@ function extractFromSheet_v6(ws, sheetName){
     const base  = (dbNum!=null && dbNum!==0) ? dbNum : (tNum!=null ? tNum : 0);
     if (!iso || !nameStr || !base) return;
     const credit = creditByHZ != null ? creditByHZ : ((tNum!=null && tNum<0) || (dbNum!=null && dbNum<0));
+    
+    // Extract year and month_tag from ISO date - ISO is always YYYY-MM-DD
+    const [isoYearStr, isoMonthStr, isoDayStr] = iso.split('-');
+    let year = parseInt(isoYearStr);
+    let month_tag = parseInt(isoMonthStr);
+    let dayNum = parseInt(isoDayStr);
+    
+    // CRITICAL FIX: Check if we need to swap day and month
+    // If the file has a consistent tag (month), and the parsed month doesn't match,
+    // it means Excel/parser interpreted DD/MM as MM/DD - we need to swap!
+    // We allow a small tolerance for cross-month transactions (±1 month)
+    const userTag = window.__currentUploadTag;  // Set during upload
+    if (userTag && Math.abs(month_tag - userTag) > 1 && dayNum >= 1 && dayNum <= 12) {
+      // Month doesn't match tag, and day is valid as a month (1-12), so swap them
+      [month_tag, dayNum] = [dayNum, month_tag];
+      year = parseInt(isoYearStr);  // Keep year the same
+    }
+    
+    // CRITICAL: Always format as DD-MM-YYYY (day first!)
+    const date_str = `${String(dayNum).padStart(2,'0')}-${String(month_tag).padStart(2,'0')}-${year}`;
+    
+    // Reconstruct ISO with corrected values
+    const corrected_iso = `${year}-${String(month_tag).padStart(2,'0')}-${String(dayNum).padStart(2,'0')}`;
+    
     rows.push({
-      date: iso,
+      date: corrected_iso,           // ISO format for storage
+      date_iso: corrected_iso,       // Explicit ISO column
+      date_str: date_str,  // DD-MM-YYYY format
+      year: year,
+      month_tag: month_tag,
+      tag: month_tag,      // Keep legacy tag field for compatibility
       name: nameStr,
       amount: Math.abs(tNum!=null ? tNum : base),
       debit:  Math.abs(dbNum!=null ? dbNum : base),
@@ -874,31 +955,78 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
   const [msg,setMsg]=React.useState(''); const [sortKey,setSortKey]=React.useState('date'); const [sortDir,setSortDir]=React.useState('asc');
   const [q,setQ]=React.useState('');
   function addManual(){
-    const r={ id:'m_'+Date.now(), tag:Number(dayjs().format('M')), date:dayjs().format('YYYY-MM-DD'),
-      name:'', amount:0, debit:0, currency:'ILS', type:'Expense', category:'', subcategory:'', notes:'', vi:false, manual:true };
+    const now = dayjs();
+    const date_iso = now.format('YYYY-MM-DD');
+    const r={ 
+      id:'m_'+Date.now(), 
+      tag:now.month() + 1, 
+      date: date_iso,
+      date_iso: date_iso,
+      date_str: formatDMY(date_iso),
+      year: now.year(),
+      month_tag: now.month() + 1,
+      name:'', amount:0, debit:0, currency:'ILS', type:'Expense', category:'', subcategory:'', notes:'', vi:false, manual:true 
+    };
     const next=[r].concat(rows); setRows(next); API.saveStage(next).catch(()=>{});
   }
   async function onUpload(e){
     const f=e.target.files && e.target.files[0]; if(!f) return;
     try{
+      // Ask user for tag and year
       var suggested=Number(dayjs().format('M'));
-      var tgStr=window.prompt('Enter month tag (1–12)', String(suggested));
-      var tag=Number(tgStr); if(!isFinite(tag)||tag<1||tag>12) tag=suggested;
+      var tgStr=window.prompt('Enter month tag (1–12) for this upload:', String(suggested));
+      if (!tgStr) { e.target.value=''; return; } // User cancelled
+      var tag=Number(tgStr); 
+      if(!isFinite(tag)||tag<1||tag>12) {
+        alert('Invalid tag. Must be 1-12.');
+        e.target.value='';
+        return;
+      }
+      
+      // Store tag globally so pushRow can validate dates against it
+      window.__currentUploadTag = tag;
+      
+      var suggestedYear=dayjs().year();
+      var yearStr=window.prompt('Enter year for this upload:', String(suggestedYear));
+      if (!yearStr) { e.target.value=''; return; } // User cancelled
+      var year=Number(yearStr);
+      if(!isFinite(year)||year<2000||year>2100) {
+        alert('Invalid year. Must be 2000-2100.');
+        e.target.value='';
+        return;
+      }
+      
       const extracted=await extractFromWorkbook_v6(f);
-      const built=extracted.map((x,i)=>({
-      id:'u_'+i+'_'+Date.now(), tag:tag, date:x.date, name:x.name,
-      amount:Math.abs(Number(x.amount||0)), debit:Number(Math.abs(x.debit||0)),
-      currency:'ILS',
-      type: x.__credit ? 'Income' : 'Expense',
-      category:'', subcategory:'', notes:'', vi:false, manual:false
-    }));
+      
+      // Build transactions with user-provided tag and year
+      const built=extracted.map((x,i)=>{
+        const date_iso = x.date_iso || x.date;
+        const date_str = x.date_str || formatDMY(date_iso);
+        
+        return {
+          id:'u_'+i+'_'+Date.now(), 
+          tag: tag,
+          date: date_iso,
+          date_iso: date_iso,
+          date_str: date_str,
+          year: year,
+          month_tag: tag,
+          name: x.name,
+          amount:Math.abs(Number(x.amount||0)), 
+          debit:Number(Math.abs(x.debit||0)),
+          currency:'ILS',
+          type: x.__credit ? 'Income' : 'Expense',
+          category:'', subcategory:'', notes:'', vi:false, manual:false
+        };
+      });
 
-    // NEW: auto-categorize using past_data + categories
-    const autoed = await autoCategorizeRows(built);
-
-    setRows(autoed);
-    setMsg('✅ '+autoed.length+' transactions ready (auto-categorized where confident)');
-    await API.saveStage(autoed);
+      // Auto-categorize using past_data + categories
+      const autoed = await autoCategorizeRows(built);
+      
+      const invalidCount = extracted.length - autoed.length;
+      setRows(autoed);
+      setMsg(`✅ Imported: ${autoed.length} rows${invalidCount > 0 ? ` | Skipped: ${invalidCount} invalid` : ''} | Tag: ${tag}, Year: ${year}`);
+      await API.saveStage(autoed);
     }catch(err){ alert('Parse failed: '+err.message); }
     e.target.value='';
   }
@@ -1046,12 +1174,43 @@ function TransactionsTab({rows,setRows,categories,onSaved}){
 
                   <td className="w-tag">
                     {manual
-                      ? <input type="number" value={(r.tag==null?'':r.tag)} onChange={(e)=>patch(id,{tag:Number(e.target.value||0)})}/>
-                      : <span className="ro-tag" title="Month tag">{(r.tag==null||r.tag===0)?'—':r.tag}</span>}
+                      ? <input 
+                          type="number" 
+                          value={(r.month_tag || r.tag)==null?'':(r.month_tag || r.tag)} 
+                          onChange={(e)=>patch(id,{tag:Number(e.target.value||0), month_tag:Number(e.target.value||0)})}
+                          title="Month (1-12)"
+                        />
+                      : <span className="ro-tag" title="Month tag">{(r.month_tag!=null ? r.month_tag : (r.tag!=null ? r.tag : '—'))}</span>}
                   </td>
 
                   <td className="w-date">
-                    <input className={!manual?'locked':''} readOnly={!manual} type="text" value={r.date||''} onChange={(e)=>patch(id,{date:e.target.value})}/>
+                    {manual ? (
+                      <input 
+                        type="text" 
+                        placeholder="DD-MM-YYYY"
+                        value={r.date_str || formatDMY(r.date_iso || r.date)} 
+                        onChange={(e)=>{
+                          const dmyValue = e.target.value;
+                          const isoValue = parseDMYtoISO(dmyValue);
+                          const d = dayjs(isoValue);
+                          patch(id, {
+                            date: isoValue,
+                            date_iso: isoValue,
+                            date_str: dmyValue,
+                            year: d.isValid() ? d.year() : r.year,
+                            month_tag: d.isValid() ? d.month() + 1 : r.month_tag,
+                            tag: d.isValid() ? d.month() + 1 : r.tag
+                          });
+                        }}
+                      />
+                    ) : (
+                      <input 
+                        className="locked" 
+                        readOnly={true} 
+                        type="text" 
+                        value={r.date_str || formatDMY(r.date_iso || r.date)}
+                      />
+                    )}
                   </td>
 
                   <td className="w-name" style={{textAlign:'center'}}>
@@ -1103,8 +1262,8 @@ function DataTab({past,categories,onSaved}){
   const [rows,setRows]=React.useState(Array.isArray(past)?past.slice():[]);
   const [q,setQ]=React.useState(''); const [sortKey,setSortKey]=React.useState('date'); const [sortDir,setSortDir]=React.useState('asc'); const [saving,setSaving]=React.useState(false);
   React.useEffect(()=>setRows(Array.isArray(past)?past.slice():[]),[JSON.stringify(past||[])]);
-  const totalTx=rows.length; const totalOutcome=rows.reduce((a,r)=>a+(String(r.type||'').toLowerCase()==='income'?0:Number(r.debit||0)),0); const catCount=Object.keys(categories||{}).length; 
-  const activeMonths=(function(list){var s={}; list.forEach(r=>{var t=String(r.tag||''); if(t&&t!=='0') s[t]=1;}); return Object.keys(s).length;})(rows);
+  const totalTx=rows.length; const catCount=Object.keys(categories||{}).length; 
+  const activeMonths=(function(list){var s={}; list.forEach(r=>{var t=String(r.tag||r.month_tag||''); if(t&&t!=='0') s[t]=1;}); return Object.keys(s).length;})(rows);
   // Single filter: select column and enter value
   // Default: if there are tags, set filterCol to 'tag' and filterVal to max tag
   const tags = React.useMemo(() => rows.map(r => Number(r.tag)).filter(n => !isNaN(n)), [rows]);
@@ -1243,7 +1402,6 @@ function DataTab({past,categories,onSaved}){
       <div className="section-title">📊 Transaction Data</div>
       <div className="kpis">
         <div className="kpi k1">Total Transactions<span className="n">{(totalTx)}</span></div>
-        <div className="kpi k2">Total Spending<span className="n">₪{fmt2(totalOutcome)}</span></div>
         <div className="kpi k3">Categories<span className="n">{(catCount)}</span></div>
         <div className="kpi k1">Active Months<span className="n">{(activeMonths)}</span></div>
       </div>
@@ -1349,8 +1507,37 @@ function DataTab({past,categories,onSaved}){
               return (
                 <tr key={id} className={r.vi?'row-vi':''}>
                   <td style={{width:48}}><button className="btn danger" onClick={()=>delRow(id)}>✖</button></td>
-                  <td className="w-tag"><input type="number" value={r.tag||''} onChange={(e)=>patch(id,{tag:Number(e.target.value||0)})}/></td>
-                  <td className="w-date"><input type="text" value={r.date||''} onChange={(e)=>patch(id,{date:e.target.value})}/></td>
+                  <td className="w-tag">
+                    <input 
+                      type="number" 
+                      value={r.month_tag || r.tag||''} 
+                      onChange={(e)=>{
+                        const newTag = Number(e.target.value||0);
+                        patch(id,{tag:newTag, month_tag:newTag});
+                      }}
+                      title="Month (1-12)"
+                    />
+                  </td>
+                  <td className="w-date">
+                    <input 
+                      type="text" 
+                      placeholder="DD-MM-YYYY"
+                      value={r.date_str || formatDMY(r.date_iso || r.date)} 
+                      onChange={(e)=>{
+                        const dmyValue = e.target.value;
+                        const isoValue = parseDMYtoISO(dmyValue);
+                        const d = dayjs(isoValue);
+                        patch(id, {
+                          date: isoValue,
+                          date_iso: isoValue,
+                          date_str: dmyValue,
+                          year: d.isValid() ? d.year() : (r.year || dayjs().year()),
+                          month_tag: d.isValid() ? d.month() + 1 : (r.month_tag || r.tag || 1),
+                          tag: d.isValid() ? d.month() + 1 : (r.tag || 1)
+                        });
+                      }}
+                    />
+                  </td>
                   <td className="w-name" style={{textAlign:'center'}}>
                     <div className="cell-hscroll"><input className="fit" type="text" value={r.name||''} title={r.name||''} onChange={(e)=>patch(id,{name:e.target.value})}/></div>
                   </td>
@@ -1592,10 +1779,10 @@ function SummaryTab({past,active}){
         <div className="controls" style={{marginBottom:10}}>
           <button 
             className="btn btn-xs" 
-            onClick={() => setMonthRangeStart(Math.max(0, monthRangeStart - maxDisplayMonths))}
+            onClick={() => setMonthRangeStart(Math.max(0, monthRangeStart - 1))}
             disabled={!canNavigatePrev}
           >
-            ← Previous {maxDisplayMonths}
+            ← Previous Month
           </button>
           <span className="muted" style={{margin: '0 12px'}}>
             Showing months {displayMonths[0]} to {displayMonths[displayMonths.length-1]} 
@@ -1603,10 +1790,10 @@ function SummaryTab({past,active}){
           </span>
           <button 
             className="btn btn-xs" 
-            onClick={() => setMonthRangeStart(Math.min(totalMonths - maxDisplayMonths, monthRangeStart + maxDisplayMonths))}
+            onClick={() => setMonthRangeStart(Math.min(totalMonths - maxDisplayMonths, monthRangeStart + 1))}
             disabled={!canNavigateNext}
           >
-            Next {maxDisplayMonths} →
+            Next Month →
           </button>
           <button 
             className="btn btn-xs" 
@@ -1622,10 +1809,25 @@ function SummaryTab({past,active}){
           <thead><tr><th>Category</th>{displayMonths.map(m=><th key={'h'+m}>{m}</th>)}</tr></thead>
           <tbody>
             {(function(){
-              // Show all categories (income and expense)
-              const allCats=(function(){ var s={}; Object.keys(monthCategoryDataAll).forEach(mm=>{ Object.keys(monthCategoryDataAll[mm]).forEach(c=>s[c]=1); }); return Object.keys(s).sort((a,b)=>a.localeCompare(b)); })();
+              // Show all categories (income and expense) that have data in displayed months
+              const allCats=(function(){ 
+                var s={}; 
+                displayMonths.forEach(mm=>{ 
+                  if (monthCategoryDataAll[mm]) {
+                    Object.keys(monthCategoryDataAll[mm]).forEach(c=>s[c]=1); 
+                  }
+                }); 
+                return Object.keys(s).sort((a,b)=>a.localeCompare(b)); 
+              })();
               if(!allCats.length) return <tr><td colSpan={displayMonths.length+1} className="muted" style={{textAlign:'center'}}>No categories yet.</td></tr>;
-              return allCats.map(cat=>{
+              return allCats.filter(cat => {
+                // Hide category if it has no data (all zeros/dashes) across displayed months
+                const hasData = displayMonths.some(m => {
+                  const cell = monthCategoryDataAll[m] && monthCategoryDataAll[m][cat];
+                  return cell && cell.total !== 0;
+                });
+                return hasData;
+              }).map(cat=>{
                 const exp=!!expanded[cat];
                 return (
                   <React.Fragment key={cat}>
@@ -1642,7 +1844,16 @@ function SummaryTab({past,active}){
                     {exp && (function(){
                       var subsSet={}; displayMonths.forEach(m=>{ var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat]; if(cell){ Object.keys(cell.subcategories||{}).forEach(s=>subsSet[s]=1); }});
                       var subs=Object.keys(subsSet).sort((a,b)=>a.localeCompare(b));
-                      return subs.map(s=>(
+                      // Hide subcategories that have no data across displayed months
+                      return subs.filter(s => {
+                        const hasData = displayMonths.some(m => {
+                          var cell=monthCategoryDataAll[m]&&monthCategoryDataAll[m][cat];
+                          var subData=cell?(cell.subcategories[s]||{total:0}):0;
+                          var v = typeof subData === 'number' ? subData : subData.total;
+                          return v !== 0;
+                        });
+                        return hasData;
+                      }).map(s=>(
                         <tr key={cat+'__'+s}>
                           <td className="muted" style={{paddingLeft:42}}>↳ {s}</td>
                           {displayMonths.map(m=>{
@@ -1660,13 +1871,20 @@ function SummaryTab({past,active}){
                 );
               });
             })()}
-            <tr>
-              <td><strong>Net (Income − Outcome)</strong></td>
+            <tr style={{
+              borderTop: '3px solid #6b46c1', 
+              backgroundColor: '#f3f4f6',
+              boxShadow: '0 2px 8px rgba(107, 70, 193, 0.15)'
+            }}>
+              <td><strong style={{fontSize: '16px', color: '#2b2f42'}}>Net (Income − Expenses)</strong></td>
               {displayMonths.map(m=> {
                 const netValue = Number((monthNet[m]&&monthNet[m].net)||0);
                 const isPositive = netValue > 0;
                 const displayValue = netValue !== 0 ? (isPositive ? '+' : '') + '₪' + fmt2(Math.abs(netValue)) : '₪0.00';
-                return <td key={'net_'+m}><strong style={{color: netValue > 0 ? '#16a34a' : netValue < 0 ? '#dc2626' : 'inherit'}}>{displayValue}</strong></td>;
+                return <td key={'net_'+m}><strong style={{
+                  fontSize: '15px',
+                  color: netValue > 0 ? '#16a34a' : netValue < 0 ? '#dc2626' : '#6b7280'
+                }}>{displayValue}</strong></td>;
               })}
             </tr>
           </tbody>
@@ -1740,7 +1958,409 @@ function SummaryTab({past,active}){
   );
 }
 
-/* ---------- Settings (defined BEFORE App) ---------- */
+/* ---------- Statistics Tab ---------- */
+function StatisticsTab({past, categories}){
+  // Filter state
+  const [selectedTags, setSelectedTags] = React.useState([]);
+  const [selectedYears, setSelectedYears] = React.useState([]);
+  const [selectedCategory, setSelectedCategory] = React.useState('');
+  const [selectedSubcategories, setSelectedSubcategories] = React.useState([]);
+  const [typeFilter, setTypeFilter] = React.useState('Expense'); // 'All' | 'Expense' | 'Income'
+  
+  // Statistics data
+  const [summary, setSummary] = React.useState({mean:0, max:0, min:0, count:0});
+  const [perTagMeans, setPerTagMeans] = React.useState({per_tag:[], combined_mean:0});
+  const [categoryLast3, setCategoryLast3] = React.useState({data:[]});
+  const [incomeMeans, setIncomeMeans] = React.useState({breakdown:[], overall_mean:0});
+  const [rollup, setRollup] = React.useState({data:[]});
+  
+  // Available options from data
+  const availableTags = React.useMemo(() => {
+    const tags = new Set();
+    (past || []).forEach(tx => {
+      const tag = tx.month_tag || tx.tag;
+      if (tag) tags.add(tag);
+    });
+    return Array.from(tags).sort((a,b) => a-b);
+  }, [past]);
+  
+  const availableYears = React.useMemo(() => {
+    const years = new Set();
+    (past || []).forEach(tx => {
+      const year = tx.year;
+      if (year) years.add(year);
+    });
+    return Array.from(years).sort((a,b) => a-b);
+  }, [past]);
+  
+  const categoryOptions = React.useMemo(() => {
+    return Object.keys(categories || {}).sort();
+  }, [categories]);
+  
+  const subcategoryOptions = React.useMemo(() => {
+    if (!selectedCategory || !categories[selectedCategory]) return [];
+    return categories[selectedCategory];
+  }, [selectedCategory, categories]);
+  
+  // Quick filter presets
+  function quickFilterLast3Months() {
+    const sorted = availableTags.slice().sort((a,b) => b-a);
+    setSelectedTags(sorted.slice(0, 3));
+  }
+  
+  function quickFilterLast6Months() {
+    const sorted = availableTags.slice().sort((a,b) => b-a);
+    setSelectedTags(sorted.slice(0, 6));
+  }
+  
+  function quickFilterYTD() {
+    const currentYear = new Date().getFullYear();
+    const currentMonth = new Date().getMonth() + 1;
+    setSelectedYears([currentYear]);
+    const ytdTags = availableTags.filter(t => t <= currentMonth);
+    setSelectedTags(ytdTags);
+  }
+  
+  // Build filter object for API calls
+  const filters = React.useMemo(() => ({
+    tags: selectedTags,
+    years: selectedYears,
+    category: selectedCategory,
+    subcategories: selectedSubcategories,
+    type: typeFilter
+  }), [selectedTags, selectedYears, selectedCategory, selectedSubcategories, typeFilter]);
+  
+  // Fetch statistics when filters change
+  React.useEffect(() => {
+    if (!past || past.length === 0) return;
+    
+    // Fetch summary (Mean, Max, Min)
+    API.statsSummary(filters).then(setSummary).catch(e => console.error('Stats summary error:', e));
+    
+    // Fetch per-tag means (bar chart)
+    API.statsPerTagMeans(filters).then(setPerTagMeans).catch(e => console.error('Stats per tag error:', e));
+    
+    // Fetch category last 3 months (if category selected)
+    if (selectedCategory) {
+      API.statsCategoryLast3({category: selectedCategory}).then(setCategoryLast3).catch(e => console.error('Stats cat last3 error:', e));
+    }
+    
+    // Fetch income means
+    if (typeFilter === 'Income' || typeFilter === 'All') {
+      API.statsIncomeMeans({tags: selectedTags, years: selectedYears}).then(setIncomeMeans).catch(e => console.error('Stats income error:', e));
+    }
+    
+    // Fetch rollup table
+    API.statsRollup(filters).then(setRollup).catch(e => console.error('Stats rollup error:', e));
+  }, [JSON.stringify(filters), past.length]);
+  
+  // Toggle tag selection
+  function toggleTag(tag) {
+    setSelectedTags(prev => 
+      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+    );
+  }
+  
+  // Toggle year selection
+  function toggleYear(year) {
+    setSelectedYears(prev => 
+      prev.includes(year) ? prev.filter(y => y !== year) : [...prev, year]
+    );
+  }
+  
+  // Export statistics to CSV
+  function exportCSV() {
+    const rows = [
+      ['MoneyTron Statistics Export'],
+      ['Generated:', new Date().toISOString()],
+      [''],
+      ['Filters:'],
+      ['Tags:', selectedTags.join(', ') || 'All'],
+      ['Years:', selectedYears.join(', ') || 'All'],
+      ['Category:', selectedCategory || 'All'],
+      ['Type:', typeFilter],
+      [''],
+      ['Summary Statistics:'],
+      ['Mean', 'Max', 'Min', 'Count'],
+      [summary.mean.toFixed(2), summary.max.toFixed(2), summary.min.toFixed(2), summary.count],
+      [''],
+      ['Per-Tag Means:'],
+      ['Tag', 'Mean', 'Count'],
+      ...perTagMeans.per_tag.map(item => [item.tag, item.mean.toFixed(2), item.count]),
+      ['Combined Mean', perTagMeans.combined_mean.toFixed(2), ''],
+      [''],
+      ['Rollup Table:'],
+      ['Year', 'Tag', 'Total', 'Mean', 'Count'],
+      ...rollup.data.map(item => [item.year, item.tag, item.total.toFixed(2), item.mean.toFixed(2), item.count])
+    ];
+    
+    const csv = rows.map(row => row.join(',')).join('\n');
+    const blob = new Blob([csv], {type: 'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `moneytron_statistics_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  
+  if (!past || past.length === 0) {
+    return (
+      <div className="panel">
+        <div className="section-title">📊 Statistics Dashboard</div>
+        <div className="muted">No transaction data available. Upload data first in the Transactions or Data tabs.</div>
+      </div>
+    );
+  }
+  
+  return (
+    <React.Fragment>
+      <div className="section-title">📊 Statistics Dashboard</div>
+      <div className="section-sub">Analyze your financial data with powerful filtering and insights.</div>
+      
+      {/* Sticky Filter Bar */}
+      <div className="panel" style={{marginBottom: 14, position: 'sticky', top: 0, zIndex: 10, backgroundColor: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)'}}>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 12}}>
+          {/* Tags (Months) Filter */}
+          <div>
+            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Tags (Months)</label>
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+              {availableTags.map(tag => (
+                <button
+                  key={tag}
+                  className={'btn btn-xs ' + (selectedTags.includes(tag) ? 'primary' : '')}
+                  onClick={() => toggleTag(tag)}
+                  style={{minWidth: 40}}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          {/* Years Filter */}
+          <div>
+            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Years</label>
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+              {availableYears.map(year => (
+                <button
+                  key={year}
+                  className={'btn btn-xs ' + (selectedYears.includes(year) ? 'primary' : '')}
+                  onClick={() => toggleYear(year)}
+                >
+                  {year}
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          {/* Category Filter */}
+          <div>
+            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Category</label>
+            <select 
+              value={selectedCategory} 
+              onChange={(e) => {setSelectedCategory(e.target.value); setSelectedSubcategories([]);}}
+              style={{width: '100%'}}
+            >
+              <option value="">All Categories</option>
+              {categoryOptions.map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
+          
+          {/* Subcategory Filter */}
+          <div>
+            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Subcategory</label>
+            <select 
+              value={selectedSubcategories[0] || ''} 
+              onChange={(e) => setSelectedSubcategories(e.target.value ? [e.target.value] : [])}
+              disabled={!selectedCategory}
+              style={{width: '100%'}}
+            >
+              <option value="">All Subcategories</option>
+              {subcategoryOptions.map(sub => (
+                <option key={sub} value={sub}>{sub}</option>
+              ))}
+            </select>
+          </div>
+          
+          {/* Type Toggle */}
+          <div>
+            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Type</label>
+            <div style={{display: 'flex', gap: 6}}>
+              {['All', 'Expense', 'Income'].map(type => (
+                <button
+                  key={type}
+                  className={'btn btn-xs ' + (typeFilter === type ? 'primary' : '')}
+                  onClick={() => setTypeFilter(type)}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        
+        {/* Quick Filters */}
+        <div style={{display: 'flex', gap: 8, alignItems: 'center', paddingTop: 8, borderTop: '1px solid #e5e7eb'}}>
+          <span style={{fontWeight: 600, marginRight: 8}}>Quick Filters:</span>
+          <button className="btn btn-xs ghost" onClick={quickFilterLast3Months}>Last 3 Months</button>
+          <button className="btn btn-xs ghost" onClick={quickFilterLast6Months}>Last 6 Months</button>
+          <button className="btn btn-xs ghost" onClick={quickFilterYTD}>YTD</button>
+          <button className="btn btn-xs ghost" onClick={() => {setSelectedTags([]); setSelectedYears([]); setSelectedCategory(''); setSelectedSubcategories([]); setTypeFilter('Expense');}}>Clear All</button>
+          <div style={{flex: 1}}></div>
+          <button className="btn btn-xs primary" onClick={exportCSV}>📊 Export CSV</button>
+        </div>
+      </div>
+      
+      {/* KPI Cards: Mean, Max, Min */}
+      <div className="kpis">
+        <div className="kpi k1">
+          Mean Amount
+          <span className="n">₪{fmt2(summary.mean)}</span>
+        </div>
+        <div className="kpi k2">
+          Max Amount
+          <span className="n">₪{fmt2(summary.max)}</span>
+        </div>
+        <div className="kpi k3">
+          Min Amount
+          <span className="n">₪{fmt2(summary.min)}</span>
+        </div>
+        <div className="kpi k4">
+          Transactions
+          <span className="n">{summary.count}</span>
+        </div>
+      </div>
+      
+      {/* Per-Tag Means (Bar Chart) */}
+      {selectedTags.length > 0 && (
+        <div className="panel" style={{marginBottom: 14}}>
+          <div className="section-title">📊 Mean of {typeFilter === 'All' ? 'Transactions' : typeFilter + 's'} Across Selected Months</div>
+          <div style={{overflowX: 'auto'}}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Tag</th>
+                  <th>Mean (₪)</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perTagMeans.per_tag.map(item => (
+                  <tr key={item.tag}>
+                    <td><strong>{item.tag}</strong></td>
+                    <td>₪{fmt2(item.mean)}</td>
+                    <td>{item.count}</td>
+                  </tr>
+                ))}
+                <tr style={{borderTop: '2px solid #6b46c1', backgroundColor: '#f3f4f6'}}>
+                  <td><strong>Combined Mean</strong></td>
+                  <td><strong>₪{fmt2(perTagMeans.combined_mean)}</strong></td>
+                  <td>—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      
+      {/* Category Last 3 Months */}
+      {selectedCategory && categoryLast3.data.length > 0 && (
+        <div className="panel" style={{marginBottom: 14}}>
+          <div className="section-title">📈 Mean of "{selectedCategory}" (Last 3 Months)</div>
+          <div style={{overflowX: 'auto'}}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Month Tag</th>
+                  <th>Mean (₪)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {categoryLast3.data.map(item => (
+                  <tr key={item.tag}>
+                    <td>{item.tag}</td>
+                    <td>₪{fmt2(item.mean)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      
+      {/* Income Means */}
+      {(typeFilter === 'Income' || typeFilter === 'All') && incomeMeans.breakdown.length > 0 && (
+        <div className="panel" style={{marginBottom: 14}}>
+          <div className="section-title">💰 Mean of Incomes</div>
+          <div className="kpis" style={{marginBottom: 12}}>
+            <div className="kpi k2">
+              Overall Income Mean
+              <span className="n">₪{fmt2(incomeMeans.overall_mean)}</span>
+            </div>
+          </div>
+          <div style={{overflowX: 'auto'}}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Subcategory</th>
+                  <th>Mean (₪)</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incomeMeans.breakdown.map((item, idx) => (
+                  <tr key={idx}>
+                    <td>{item.category}</td>
+                    <td>{item.subcategory}</td>
+                    <td>₪{fmt2(item.mean)}</td>
+                    <td>{item.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      
+      {/* Rollup Table */}
+      {rollup.data.length > 0 && (
+        <div className="panel">
+          <div className="section-title">📋 {typeFilter === 'All' ? 'All' : typeFilter} Transactions Rollup</div>
+          <div style={{overflowX: 'auto'}}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Year</th>
+                  <th>Tag</th>
+                  <th>Total (₪)</th>
+                  <th>Mean (₪)</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rollup.data.map((item, idx) => (
+                  <tr key={idx}>
+                    <td>{item.year}</td>
+                    <td>{item.tag}</td>
+                    <td>₪{fmt2(item.total)}</td>
+                    <td>₪{fmt2(item.mean)}</td>
+                    <td>{item.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </React.Fragment>
+  );
+}
+
+/* ---------- Settings (renamed, but keeping for backward compatibility - will be hidden) ---------- */
 function SettingsTab({ user, past, categories, stage, settings, onReload }){
   const [dateFormat, setDateFormat] = React.useState(settings.dateFormat || 'YYYY-MM-DD');
   const [currency, setCurrency] = React.useState(settings.currency || 'ILS');
@@ -1889,13 +2509,13 @@ function App(){
           {tabBtn('summary','Summary','📊')}
           {tabBtn('data','Data','📄')}
           {tabBtn('categories','Categories','📚')}
-          {tabBtn('settings','Settings','⚙️')}
+          {tabBtn('statistics','Statistics','📈')}
         </div>
         {tab==='transactions' && <TransactionsTab rows={stage} setRows={setStage} categories={categories} onSaved={onSavedTx}/>}
         {tab==='data' && <DataTab past={past} categories={categories} onSaved={reload}/>} 
         {tab==='summary' && <SummaryTab past={past} active={tab==='summary'}/>} 
         {tab==='categories' && <CategoriesTab user={user} categories={categories} onSaved={setCategories}/>} 
-        {tab==='settings' && <SettingsTab user={user} past={past} categories={categories} stage={stage} settings={settings} onReload={reload}/>} 
+        {tab==='statistics' && <StatisticsTab past={past} categories={categories}/>} 
       </div>
     </div>
   );
