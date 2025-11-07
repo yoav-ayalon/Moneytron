@@ -372,68 +372,277 @@ def api_clear_all():
 # =============================================================================
 # Statistics endpoints
 # =============================================================================
-@app.route("/api/statistics/summary", methods=["POST"])
-def api_statistics_summary():
-    """Calculate Mean, Max, Min for filtered transactions"""
+@app.route("/api/statistics", methods=["POST"])
+def api_statistics():
+    """
+    New unified statistics endpoint.
+    Computes monthly statistics over selected (year, tag) cells.
+    
+    Expects JSON body:
+    {
+      "years": [2025, 2024, ...],
+      "tagsByYear": {"2025": [7,8,9], "2024": [10,11,12]},
+      "type": "Expense" | "Income",
+      "categories": ["אוכל", ...] (optional, empty = all),
+      "subcategories": ["קפה", ...] (optional, only if 1 category selected),
+      "quickFilter": "none" | "last3" | "last6" | "alltime" (optional)
+    }
+    
+    Returns:
+    {
+      "months": [{"year": 2025, "tag": 7, "total": 8536.60, "count": 45}, ...],
+      "summary": {
+        "total_over_period": 24643.87,
+        "avg_monthly": 8214.62,
+        "median_monthly": 7433.10,
+        "min_monthly": 3393.83,
+        "max_monthly": 12643.87
+      },
+      "top_categories": [
+        {"name": "אוכל", "total": 9000.0, "avg_per_month": 3000.0},
+        ...
+      ]
+    }
+    """
     user = _require_user()
     p = _ensure_user_files(user)
     
     payload = request.get_json(force=True)
-    tags = payload.get("tags", [])  # list of month numbers
-    years = payload.get("years", [])  # list of years
-    category = payload.get("category", "")
-    subcategories = payload.get("subcategories", [])
-    tx_type = payload.get("type", "All")  # "Expense" | "Income" | "All"
+    years = payload.get("years", [])
+    tags_by_year = payload.get("tagsByYear", {})
+    tx_type = payload.get("type", "Expense")
+    categories_filter = payload.get("categories", [])
+    subcategories_filter = payload.get("subcategories", [])
+    quick_filter = payload.get("quickFilter", "none")
     
     past = _read_json(p["past"], [])
     
-    # Filter transactions
+    # Handle quick filters by deriving years and tags from data
+    if quick_filter in ["last3", "last6", "alltime"]:
+        # Build list of (year, tag) pairs from data with dates
+        year_tag_pairs = set()
+        for tx in past:
+            if not isinstance(tx, dict):
+                continue
+            date_str = tx.get("date", "")
+            if not date_str or len(date_str) < 4:
+                continue
+            try:
+                year = int(date_str[:4])
+            except:
+                continue
+            tag = tx.get("month_tag") or tx.get("tag")
+            if tag is not None:
+                year_tag_pairs.add((year, int(tag)))
+        
+        # Sort by (year, tag) descending to get most recent first
+        sorted_pairs = sorted(year_tag_pairs, reverse=True)
+        
+        if quick_filter == "last3":
+            selected_pairs = sorted_pairs[:3]
+        elif quick_filter == "last6":
+            selected_pairs = sorted_pairs[:6]
+        else:  # alltime
+            selected_pairs = sorted_pairs
+        
+        # Rebuild years and tags_by_year from selected pairs
+        years = sorted(list(set(y for y, t in selected_pairs)))
+        tags_by_year = {}
+        for y, t in selected_pairs:
+            y_str = str(y)
+            if y_str not in tags_by_year:
+                tags_by_year[y_str] = []
+            tags_by_year[y_str].append(t)
+    
+    # Build set of selected (year, tag) cells
+    selected_cells = set()
+    for year in years:
+        year_str = str(year)
+        tags_for_year = tags_by_year.get(year_str, [])
+        for tag in tags_for_year:
+            selected_cells.add((int(year), int(tag)))
+    
+    # Validate: must have at least 2 cells
+    if len(selected_cells) < 2:
+        return jsonify({
+            "error": "Select at least two months to calculate statistics.",
+            "months": [],
+            "summary": {
+                "total_over_period": 0,
+                "avg_monthly": 0,
+                "median_monthly": 0,
+                "min_monthly": 0,
+                "max_monthly": 0
+            },
+            "top_categories": []
+        })
+    
+    # Filter transactions based on selection
     filtered = []
     for tx in past:
         if not isinstance(tx, dict):
             continue
         
-        # Filter by tag/month
+        # Derive year from date
+        date_str = tx.get("date", "")
+        if not date_str or len(date_str) < 4:
+            continue
+        try:
+            tx_year = int(date_str[:4])
+        except:
+            continue
+        
         tx_tag = tx.get("month_tag") or tx.get("tag")
-        if tags and tx_tag not in tags:
+        if tx_tag is None:
             continue
         
-        # Filter by year
-        tx_year = tx.get("year")
-        if years and tx_year not in years:
+        # Check if (year, tag) is in selected cells
+        if (tx_year, int(tx_tag)) not in selected_cells:
             continue
         
-        # Filter by type
-        if tx_type != "All":
-            if tx.get("type") != tx_type:
+        # Filter by type (must be exact match - no "All")
+        if tx.get("type") != tx_type:
+            continue
+        
+        # Filter by categories
+        if categories_filter:
+            if tx.get("category") not in categories_filter:
                 continue
-        
-        # Filter by category
-        if category and tx.get("category") != category:
-            continue
-        
-        # Filter by subcategory
-        if subcategories and tx.get("subcategory") not in subcategories:
-            continue
+            
+            # Filter by subcategories (only if exactly 1 category selected)
+            if len(categories_filter) == 1 and subcategories_filter:
+                if tx.get("subcategory") not in subcategories_filter:
+                    continue
         
         filtered.append(tx)
     
-    # Calculate statistics
-    if not filtered:
-        return jsonify({"mean": 0, "max": 0, "min": 0, "count": 0})
+    # Compute monthly totals for each selected cell
+    monthly_totals = {}
+    for year, tag in selected_cells:
+        monthly_totals[(year, tag)] = {"total": 0.0, "count": 0}
     
-    amounts = [abs(float(tx.get("debit", 0))) for tx in filtered]
+    for tx in filtered:
+        date_str = tx.get("date", "")
+        try:
+            tx_year = int(date_str[:4])
+        except:
+            continue
+        tx_tag = int(tx.get("month_tag") or tx.get("tag"))
+        amount = abs(float(tx.get("debit") or tx.get("amount") or 0))
+        
+        key = (tx_year, tx_tag)
+        if key in monthly_totals:
+            monthly_totals[key]["total"] += amount
+            monthly_totals[key]["count"] += 1
+    
+    # Build months array
+    months_array = []
+    totals_list = []
+    for (year, tag), data in sorted(monthly_totals.items()):
+        months_array.append({
+            "year": year,
+            "tag": tag,
+            "total": round(data["total"], 2),
+            "count": data["count"]
+        })
+        totals_list.append(data["total"])
+    
+    # Compute summary statistics
+    num_months = len(totals_list)
+    total_over_period = sum(totals_list)
+    avg_monthly = total_over_period / num_months if num_months > 0 else 0
+    
+    # Median
+    sorted_totals = sorted(totals_list)
+    if num_months % 2 == 0:
+        median_monthly = (sorted_totals[num_months // 2 - 1] + sorted_totals[num_months // 2]) / 2 if num_months > 0 else 0
+    else:
+        median_monthly = sorted_totals[num_months // 2] if num_months > 0 else 0
+    
+    min_monthly = min(totals_list) if totals_list else 0
+    max_monthly = max(totals_list) if totals_list else 0
+    
+    # Compute top 3 categories or subcategories
+    top_categories = []
+    
+    if not categories_filter:
+        # No category filter: group by category
+        category_totals = {}
+        for tx in filtered:
+            cat = tx.get("category", "")
+            if not cat:
+                continue
+            amount = abs(float(tx.get("debit") or tx.get("amount") or 0))
+            if cat not in category_totals:
+                category_totals[cat] = 0.0
+            category_totals[cat] += amount
+        
+        # Sort and take top 3
+        sorted_cats = sorted(category_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+        for cat, total in sorted_cats:
+            top_categories.append({
+                "name": cat,
+                "total": round(total, 2),
+                "avg_per_month": round(total / num_months, 2) if num_months > 0 else 0
+            })
+    
+    elif len(categories_filter) == 1:
+        # Single category: group by subcategory
+        subcategory_totals = {}
+        for tx in filtered:
+            sub = tx.get("subcategory", "")
+            if not sub:
+                continue
+            amount = abs(float(tx.get("debit") or tx.get("amount") or 0))
+            if sub not in subcategory_totals:
+                subcategory_totals[sub] = 0.0
+            subcategory_totals[sub] += amount
+        
+        sorted_subs = sorted(subcategory_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+        for sub, total in sorted_subs:
+            top_categories.append({
+                "name": sub,
+                "total": round(total, 2),
+                "avg_per_month": round(total / num_months, 2) if num_months > 0 else 0
+            })
+    
+    else:
+        # Multiple categories: group by category
+        category_totals = {}
+        for tx in filtered:
+            cat = tx.get("category", "")
+            if not cat:
+                continue
+            amount = abs(float(tx.get("debit") or tx.get("amount") or 0))
+            if cat not in category_totals:
+                category_totals[cat] = 0.0
+            category_totals[cat] += amount
+        
+        sorted_cats = sorted(category_totals.items(), key=lambda x: x[1], reverse=True)[:3]
+        for cat, total in sorted_cats:
+            top_categories.append({
+                "name": cat,
+                "total": round(total, 2),
+                "avg_per_month": round(total / num_months, 2) if num_months > 0 else 0
+            })
+    
     return jsonify({
-        "mean": sum(amounts) / len(amounts) if amounts else 0,
-        "max": max(amounts) if amounts else 0,
-        "min": min(amounts) if amounts else 0,
-        "count": len(filtered)
+        "months": months_array,
+        "summary": {
+            "total_over_period": round(total_over_period, 2),
+            "avg_monthly": round(avg_monthly, 2),
+            "median_monthly": round(median_monthly, 2),
+            "min_monthly": round(min_monthly, 2),
+            "max_monthly": round(max_monthly, 2)
+        },
+        "top_categories": top_categories
     })
 
 
-@app.route("/api/statistics/per_tag_means", methods=["POST"])
-def api_statistics_per_tag_means():
-    """Calculate mean expenses per selected tag"""
+# Keep old endpoints for backward compatibility (deprecated)
+@app.route("/api/statistics/summary", methods=["POST"])
+def api_statistics_summary():
+    """DEPRECATED - use /api/statistics instead"""
     user = _require_user()
     p = _ensure_user_files(user)
     
@@ -442,7 +651,7 @@ def api_statistics_per_tag_means():
     years = payload.get("years", [])
     category = payload.get("category", "")
     subcategories = payload.get("subcategories", [])
-    tx_type = payload.get("type", "Expense")
+    tx_type = payload.get("type", "All")
     
     past = _read_json(p["past"], [])
     

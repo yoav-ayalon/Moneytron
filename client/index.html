@@ -222,7 +222,9 @@ var API=(function(){
     saveSettings:(settings)=>f('POST','/settings',{settings}).then(j),
     importData:(payload)=>f('POST','/import',payload).then(j),
     clearAll:()=>f('POST','/clear-all').then(j),
-    // Statistics endpoints
+    // New unified statistics endpoint
+    getStatistics:(payload)=>f('POST','/statistics',payload).then(j),
+    // Old deprecated endpoints (kept for backward compatibility)
     statsSummary:(filters)=>f('POST','/statistics/summary',filters).then(j),
     statsPerTagMeans:(filters)=>f('POST','/statistics/per_tag_means',filters).then(j),
     statsCategoryLast3:(filters)=>f('POST','/statistics/category_last3_mean',filters).then(j),
@@ -1975,148 +1977,246 @@ function SummaryTab({past,active}){
 
 /* ---------- Statistics Tab ---------- */
 function StatisticsTab({past, categories}){
-  // Filter state
-  const [selectedTags, setSelectedTags] = React.useState([]);
-  const [selectedYears, setSelectedYears] = React.useState([]);
-  const [selectedCategory, setSelectedCategory] = React.useState('');
-  const [selectedSubcategories, setSelectedSubcategories] = React.useState([]);
-  const [typeFilter, setTypeFilter] = React.useState('Expense'); // 'All' | 'Expense' | 'Income'
+  // State for user selections
+  const [selectedYears, setSelectedYears] = React.useState([]); // array of numbers
+  const [tagsByYear, setTagsByYear] = React.useState({}); // {year: [tags...]}
+  const [selectedType, setSelectedType] = React.useState('Expense'); // 'Expense' | 'Income'
+  const [selectedCategories, setSelectedCategories] = React.useState([]); // array of category names
+  const [selectedSubcategories, setSelectedSubcategories] = React.useState([]); // array of subcategory names
   
-  // Statistics data
-  const [summary, setSummary] = React.useState({mean:0, max:0, min:0, count:0});
-  const [perTagMeans, setPerTagMeans] = React.useState({per_tag:[], combined_mean:0});
-  const [categoryLast3, setCategoryLast3] = React.useState({data:[]});
-  const [incomeMeans, setIncomeMeans] = React.useState({breakdown:[], overall_mean:0});
-  const [rollup, setRollup] = React.useState({data:[]});
+  // Statistics results
+  const [statsData, setStatsData] = React.useState(null);
+  const [error, setError] = React.useState('');
+  const [calculating, setCalculating] = React.useState(false);
   
-  // Available options from data
-  const availableTags = React.useMemo(() => {
-    const tags = new Set();
+  // Derive available years and tags from past data
+  const availableYearsAndTags = React.useMemo(() => {
+    const yearTagMap = {}; // { year: Set(tags) }
+    
     (past || []).forEach(tx => {
-      const tag = tx.month_tag || tx.tag;
-      if (tag) tags.add(tag);
+      if (!tx || !tx.date) return;
+      const dateStr = String(tx.date);
+      if (dateStr.length < 4) return;
+      
+      try {
+        const year = parseInt(dateStr.substring(0, 4));
+        const tag = tx.month_tag || tx.tag;
+        
+        if (!year || !tag) return;
+        
+        if (!yearTagMap[year]) {
+          yearTagMap[year] = new Set();
+        }
+        yearTagMap[year].add(parseInt(tag));
+      } catch (e) {
+        // Skip invalid entries
+      }
     });
-    return Array.from(tags).sort((a,b) => a-b);
+    
+    // Convert Sets to sorted arrays
+    const result = {};
+    Object.keys(yearTagMap).forEach(year => {
+      result[parseInt(year)] = Array.from(yearTagMap[year]).sort((a, b) => a - b);
+    });
+    
+    return result;
   }, [past]);
   
   const availableYears = React.useMemo(() => {
-    const years = new Set();
-    (past || []).forEach(tx => {
-      const year = tx.year;
-      if (year) years.add(year);
-    });
-    return Array.from(years).sort((a,b) => a-b);
-  }, [past]);
+    return Object.keys(availableYearsAndTags).map(y => parseInt(y)).sort((a, b) => b - a);
+  }, [availableYearsAndTags]);
   
   const categoryOptions = React.useMemo(() => {
     return Object.keys(categories || {}).sort();
   }, [categories]);
   
   const subcategoryOptions = React.useMemo(() => {
-    if (!selectedCategory || !categories[selectedCategory]) return [];
-    return categories[selectedCategory];
-  }, [selectedCategory, categories]);
+    if (selectedCategories.length !== 1) return [];
+    return categories[selectedCategories[0]] || [];
+  }, [selectedCategories, categories]);
   
-  // Quick filter presets
-  function quickFilterLast3Months() {
-    const sorted = availableTags.slice().sort((a,b) => b-a);
-    setSelectedTags(sorted.slice(0, 3));
-  }
-  
-  function quickFilterLast6Months() {
-    const sorted = availableTags.slice().sort((a,b) => b-a);
-    setSelectedTags(sorted.slice(0, 6));
-  }
-  
-  function quickFilterYTD() {
-    const currentYear = new Date().getFullYear();
-    const currentMonth = new Date().getMonth() + 1;
-    setSelectedYears([currentYear]);
-    const ytdTags = availableTags.filter(t => t <= currentMonth);
-    setSelectedTags(ytdTags);
-  }
-  
-  // Build filter object for API calls
-  const filters = React.useMemo(() => ({
-    tags: selectedTags,
-    years: selectedYears,
-    category: selectedCategory,
-    subcategories: selectedSubcategories,
-    type: typeFilter
-  }), [selectedTags, selectedYears, selectedCategory, selectedSubcategories, typeFilter]);
-  
-  // Fetch statistics when filters change
-  React.useEffect(() => {
-    if (!past || past.length === 0) return;
-    
-    // Fetch summary (Mean, Max, Min)
-    API.statsSummary(filters).then(setSummary).catch(e => console.error('Stats summary error:', e));
-    
-    // Fetch per-tag means (bar chart)
-    API.statsPerTagMeans(filters).then(setPerTagMeans).catch(e => console.error('Stats per tag error:', e));
-    
-    // Fetch category last 3 months (if category selected)
-    if (selectedCategory) {
-      API.statsCategoryLast3({category: selectedCategory}).then(setCategoryLast3).catch(e => console.error('Stats cat last3 error:', e));
-    }
-    
-    // Fetch income means
-    if (typeFilter === 'Income' || typeFilter === 'All') {
-      API.statsIncomeMeans({tags: selectedTags, years: selectedYears}).then(setIncomeMeans).catch(e => console.error('Stats income error:', e));
-    }
-    
-    // Fetch rollup table
-    API.statsRollup(filters).then(setRollup).catch(e => console.error('Stats rollup error:', e));
-  }, [JSON.stringify(filters), past.length]);
-  
-  // Toggle tag selection
-  function toggleTag(tag) {
-    setSelectedTags(prev => 
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
-  }
+  // Count selected month cells
+  const selectedMonthCount = React.useMemo(() => {
+    let count = 0;
+    selectedYears.forEach(year => {
+      const tags = tagsByYear[year] || [];
+      count += tags.length;
+    });
+    return count;
+  }, [selectedYears, tagsByYear]);
   
   // Toggle year selection
   function toggleYear(year) {
-    setSelectedYears(prev => 
-      prev.includes(year) ? prev.filter(y => y !== year) : [...prev, year]
-    );
+    if (selectedYears.includes(year)) {
+      // Deselect year
+      const newYears = selectedYears.filter(y => y !== year);
+      const newTagsByYear = {...tagsByYear};
+      delete newTagsByYear[year];
+      setSelectedYears(newYears);
+      setTagsByYear(newTagsByYear);
+    } else {
+      // Select year (but don't auto-select any tags yet)
+      setSelectedYears([...selectedYears, year]);
+    }
   }
   
-  // Export statistics to CSV
-  function exportCSV() {
-    const rows = [
-      ['MoneyTron Statistics Export'],
-      ['Generated:', new Date().toISOString()],
-      [''],
-      ['Filters:'],
-      ['Tags:', selectedTags.join(', ') || 'All'],
-      ['Years:', selectedYears.join(', ') || 'All'],
-      ['Category:', selectedCategory || 'All'],
-      ['Type:', typeFilter],
-      [''],
-      ['Summary Statistics:'],
-      ['Mean', 'Max', 'Min', 'Count'],
-      [summary.mean.toFixed(2), summary.max.toFixed(2), summary.min.toFixed(2), summary.count],
-      [''],
-      ['Per-Tag Means:'],
-      ['Tag', 'Mean', 'Count'],
-      ...perTagMeans.per_tag.map(item => [item.tag, item.mean.toFixed(2), item.count]),
-      ['Combined Mean', perTagMeans.combined_mean.toFixed(2), ''],
-      [''],
-      ['Rollup Table:'],
-      ['Year', 'Tag', 'Total', 'Mean', 'Count'],
-      ...rollup.data.map(item => [item.year, item.tag, item.total.toFixed(2), item.mean.toFixed(2), item.count])
-    ];
+  // Toggle tag for a specific year
+  function toggleTag(year, tag) {
+    const currentTags = tagsByYear[year] || [];
+    let newTags;
     
-    const csv = rows.map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], {type: 'text/csv'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `moneytron_statistics_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (currentTags.includes(tag)) {
+      newTags = currentTags.filter(t => t !== tag);
+    } else {
+      newTags = [...currentTags, tag].sort((a, b) => a - b);
+    }
+    
+    setTagsByYear({
+      ...tagsByYear,
+      [year]: newTags
+    });
+  }
+  
+  // Quick filter: Last 3 Months (auto-calculate)
+  function quickFilterLast3() {
+    // Find the 3 most recent (year, tag) pairs
+    const pairs = [];
+    Object.keys(availableYearsAndTags).forEach(year => {
+      availableYearsAndTags[year].forEach(tag => {
+        pairs.push({ year: parseInt(year), tag });
+      });
+    });
+    
+    // Sort by year desc, then tag desc
+    pairs.sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year;
+      return b.tag - a.tag;
+    });
+    
+    const last3 = pairs.slice(0, 3);
+    
+    // Build selection
+    const years = [...new Set(last3.map(p => p.year))];
+    const tagMap = {};
+    last3.forEach(p => {
+      if (!tagMap[p.year]) tagMap[p.year] = [];
+      tagMap[p.year].push(p.tag);
+    });
+    
+    setSelectedYears(years);
+    setTagsByYear(tagMap);
+    
+    // Auto-calculate for Last 3 Months
+    setTimeout(() => calculateStatistics('last3'), 100);
+  }
+  
+  // Quick filter: Last 6 Months
+  function quickFilterLast6() {
+    const pairs = [];
+    Object.keys(availableYearsAndTags).forEach(year => {
+      availableYearsAndTags[year].forEach(tag => {
+        pairs.push({ year: parseInt(year), tag });
+      });
+    });
+    
+    pairs.sort((a, b) => {
+      if (a.year !== b.year) return b.year - a.year;
+      return b.tag - a.tag;
+    });
+    
+    const last6 = pairs.slice(0, 6);
+    
+    const years = [...new Set(last6.map(p => p.year))];
+    const tagMap = {};
+    last6.forEach(p => {
+      if (!tagMap[p.year]) tagMap[p.year] = [];
+      tagMap[p.year].push(p.tag);
+    });
+    
+    setSelectedYears(years);
+    setTagsByYear(tagMap);
+  }
+  
+  // Quick filter: All Time
+  function quickFilterAllTime() {
+    const years = Object.keys(availableYearsAndTags).map(y => parseInt(y));
+    const tagMap = {};
+    years.forEach(year => {
+      tagMap[year] = availableYearsAndTags[year];
+    });
+    
+    setSelectedYears(years);
+    setTagsByYear(tagMap);
+  }
+  
+  // Clear all filters
+  function clearFilters() {
+    setSelectedYears([]);
+    setTagsByYear({});
+    setSelectedCategories([]);
+    setSelectedSubcategories([]);
+    setStatsData(null);
+    setError('');
+  }
+  
+  // Toggle category selection
+  function toggleCategory(cat) {
+    if (selectedCategories.includes(cat)) {
+      setSelectedCategories(selectedCategories.filter(c => c !== cat));
+      setSelectedSubcategories([]);
+    } else {
+      setSelectedCategories([...selectedCategories, cat]);
+      setSelectedSubcategories([]);
+    }
+  }
+  
+  // Toggle subcategory (only when exactly 1 category selected)
+  function toggleSubcategory(sub) {
+    if (selectedSubcategories.includes(sub)) {
+      setSelectedSubcategories(selectedSubcategories.filter(s => s !== sub));
+    } else {
+      setSelectedSubcategories([...selectedSubcategories, sub]);
+    }
+  }
+  
+  // Calculate statistics
+  async function calculateStatistics(quickFilter = 'none') {
+    if (selectedMonthCount < 2 && quickFilter === 'none') {
+      setError('Select at least two months to calculate statistics.');
+      setStatsData(null);
+      return;
+    }
+    
+    setError('');
+    setCalculating(true);
+    
+    try {
+      const payload = {
+        years: selectedYears,
+        tagsByYear: Object.keys(tagsByYear).reduce((acc, year) => {
+          acc[year] = tagsByYear[year];
+          return acc;
+        }, {}),
+        type: selectedType,
+        categories: selectedCategories,
+        subcategories: selectedSubcategories,
+        quickFilter
+      };
+      
+      const result = await API.getStatistics(payload);
+      
+      if (result.error) {
+        setError(result.error);
+        setStatsData(null);
+      } else {
+        setStatsData(result);
+      }
+    } catch (e) {
+      setError('Failed to calculate statistics: ' + e.message);
+      setStatsData(null);
+    } finally {
+      setCalculating(false);
+    }
   }
   
   if (!past || past.length === 0) {
@@ -2129,249 +2229,375 @@ function StatisticsTab({past, categories}){
   }
   
   return (
-    <React.Fragment>
-      <div className="section-title">📊 Statistics Dashboard</div>
-      <div className="section-sub">Analyze your financial data with powerful filtering and insights.</div>
+    <div style={{maxWidth: '1200px', margin: '0 auto', padding: '0 16px'}}>
+      {/* Page Header */}
+      <div style={{marginBottom: 24}}>
+        <div className="section-title" style={{fontSize: 28, marginBottom: 6}}>📊 Statistics Dashboard</div>
+        <div className="section-sub" style={{fontSize: 14, color: '#667085'}}>
+          Analyze monthly {selectedType.toLowerCase()} patterns across selected time periods
+        </div>
+      </div>
       
-      {/* Sticky Filter Bar */}
-      <div className="panel" style={{marginBottom: 14, position: 'sticky', top: 0, zIndex: 10, backgroundColor: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)'}}>
-        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 12}}>
-          {/* Tags (Months) Filter */}
+      {/* Filter Card */}
+      <div className="panel" style={{marginBottom: 24, borderRadius: 16, padding: 24}}>
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20}}>
           <div>
-            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Tags (Months)</label>
-            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
-              {availableTags.map(tag => (
-                <button
-                  key={tag}
-                  className={'btn btn-xs ' + (selectedTags.includes(tag) ? 'primary' : '')}
-                  onClick={() => toggleTag(tag)}
-                  style={{minWidth: 40}}
-                >
-                  {tag}
-                </button>
-              ))}
-            </div>
+            <h3 style={{margin: 0, fontSize: 18, fontWeight: 700, color: '#30334b'}}>Filter Options</h3>
+            <p style={{margin: '4px 0 0', fontSize: 13, color: '#667085'}}>
+              Select time periods, type, and categories to analyze
+            </p>
           </div>
-          
-          {/* Years Filter */}
-          <div>
-            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Years</label>
-            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
-              {availableYears.map(year => (
-                <button
-                  key={year}
-                  className={'btn btn-xs ' + (selectedYears.includes(year) ? 'primary' : '')}
-                  onClick={() => toggleYear(year)}
-                >
-                  {year}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-          {/* Category Filter */}
-          <div>
-            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Category</label>
-            <select 
-              value={selectedCategory} 
-              onChange={(e) => {setSelectedCategory(e.target.value); setSelectedSubcategories([]);}}
-              style={{width: '100%'}}
-            >
-              <option value="">All Categories</option>
-              {categoryOptions.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-          </div>
-          
-          {/* Subcategory Filter */}
-          <div>
-            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Subcategory</label>
-            <select 
-              value={selectedSubcategories[0] || ''} 
-              onChange={(e) => setSelectedSubcategories(e.target.value ? [e.target.value] : [])}
-              disabled={!selectedCategory}
-              style={{width: '100%'}}
-            >
-              <option value="">All Subcategories</option>
-              {subcategoryOptions.map(sub => (
-                <option key={sub} value={sub}>{sub}</option>
-              ))}
-            </select>
-          </div>
-          
-          {/* Type Toggle */}
-          <div>
-            <label style={{fontWeight: 700, display: 'block', marginBottom: 6}}>Type</label>
-            <div style={{display: 'flex', gap: 6}}>
-              {['All', 'Expense', 'Income'].map(type => (
-                <button
-                  key={type}
-                  className={'btn btn-xs ' + (typeFilter === type ? 'primary' : '')}
-                  onClick={() => setTypeFilter(type)}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
+          <div style={{
+            padding: '6px 12px',
+            backgroundColor: selectedMonthCount >= 2 ? '#dcfce7' : '#fee2e2',
+            color: selectedMonthCount >= 2 ? '#065f46' : '#991b1b',
+            borderRadius: 16,
+            fontSize: 12,
+            fontWeight: 700
+          }}>
+            {selectedMonthCount} month{selectedMonthCount !== 1 ? 's' : ''} selected
           </div>
         </div>
         
         {/* Quick Filters */}
-        <div style={{display: 'flex', gap: 8, alignItems: 'center', paddingTop: 8, borderTop: '1px solid #e5e7eb'}}>
-          <span style={{fontWeight: 600, marginRight: 8}}>Quick Filters:</span>
-          <button className="btn btn-xs ghost" onClick={quickFilterLast3Months}>Last 3 Months</button>
-          <button className="btn btn-xs ghost" onClick={quickFilterLast6Months}>Last 6 Months</button>
-          <button className="btn btn-xs ghost" onClick={quickFilterYTD}>YTD</button>
-          <button className="btn btn-xs ghost" onClick={() => {setSelectedTags([]); setSelectedYears([]); setSelectedCategory(''); setSelectedSubcategories([]); setTypeFilter('Expense');}}>Clear All</button>
-          <div style={{flex: 1}}></div>
-          <button className="btn btn-xs primary" onClick={exportCSV}>📊 Export CSV</button>
-        </div>
-      </div>
-      
-      {/* KPI Cards: Mean, Max, Min */}
-      <div className="kpis">
-        <div className="kpi k1">
-          Mean Amount
-          <span className="n">₪{fmt2(summary.mean)}</span>
-        </div>
-        <div className="kpi k2">
-          Max Amount
-          <span className="n">₪{fmt2(summary.max)}</span>
-        </div>
-        <div className="kpi k3">
-          Min Amount
-          <span className="n">₪{fmt2(summary.min)}</span>
-        </div>
-        <div className="kpi k4">
-          Transactions
-          <span className="n">{summary.count}</span>
-        </div>
-      </div>
-      
-      {/* Per-Tag Means (Bar Chart) */}
-      {selectedTags.length > 0 && (
-        <div className="panel" style={{marginBottom: 14}}>
-          <div className="section-title">📊 Mean of {typeFilter === 'All' ? 'Transactions' : typeFilter + 's'} Across Selected Months</div>
-          <div style={{overflowX: 'auto'}}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Tag</th>
-                  <th>Mean (₪)</th>
-                  <th>Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {perTagMeans.per_tag.map(item => (
-                  <tr key={item.tag}>
-                    <td><strong>{item.tag}</strong></td>
-                    <td>₪{fmt2(item.mean)}</td>
-                    <td>{item.count}</td>
-                  </tr>
-                ))}
-                <tr style={{borderTop: '2px solid #6b46c1', backgroundColor: '#f3f4f6'}}>
-                  <td><strong>Combined Mean</strong></td>
-                  <td><strong>₪{fmt2(perTagMeans.combined_mean)}</strong></td>
-                  <td>—</td>
-                </tr>
-              </tbody>
-            </table>
+        <div style={{marginBottom: 20}}>
+          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+            Quick Select
+          </label>
+          <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+            <button 
+              className="btn btn-xs primary" 
+              onClick={quickFilterLast3}
+              style={{borderRadius: 20}}
+            >
+              Last 3 Months
+            </button>
+            <button 
+              className="btn btn-xs" 
+              onClick={quickFilterLast6}
+              style={{borderRadius: 20}}
+            >
+              Last 6 Months
+            </button>
+            <button 
+              className="btn btn-xs" 
+              onClick={quickFilterAllTime}
+              style={{borderRadius: 20}}
+            >
+              All Time
+            </button>
+            <button 
+              className="btn btn-xs ghost" 
+              onClick={clearFilters}
+              style={{borderRadius: 20}}
+            >
+              Clear All
+            </button>
           </div>
         </div>
-      )}
-      
-      {/* Category Last 3 Months */}
-      {selectedCategory && categoryLast3.data.length > 0 && (
-        <div className="panel" style={{marginBottom: 14}}>
-          <div className="section-title">📈 Mean of "{selectedCategory}" (Last 3 Months)</div>
-          <div style={{overflowX: 'auto'}}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Month Tag</th>
-                  <th>Mean (₪)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {categoryLast3.data.map(item => (
-                  <tr key={item.tag}>
-                    <td>{item.tag}</td>
-                    <td>₪{fmt2(item.mean)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        
+        {/* Year Selection */}
+        <div style={{marginBottom: 20}}>
+          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+            Years
+          </label>
+          <div style={{display: 'flex', flexWrap: 'wrap', gap: 8}}>
+            {availableYears.map(year => (
+              <button
+                key={year}
+                className={'btn btn-xs ' + (selectedYears.includes(year) ? 'primary' : '')}
+                onClick={() => toggleYear(year)}
+                style={{
+                  borderRadius: 20,
+                  minWidth: 60,
+                  padding: '8px 16px'
+                }}
+              >
+                {year}
+              </button>
+            ))}
           </div>
         </div>
-      )}
-      
-      {/* Income Means */}
-      {(typeFilter === 'Income' || typeFilter === 'All') && incomeMeans.breakdown.length > 0 && (
-        <div className="panel" style={{marginBottom: 14}}>
-          <div className="section-title">💰 Mean of Incomes</div>
-          <div className="kpis" style={{marginBottom: 12}}>
-            <div className="kpi k2">
-              Overall Income Mean
-              <span className="n">₪{fmt2(incomeMeans.overall_mean)}</span>
+        
+        {/* Tags per Year */}
+        {selectedYears.length > 0 && (
+          <div style={{marginBottom: 20}}>
+            <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+              Months (Tags)
+            </label>
+            {selectedYears.sort((a,b) => b - a).map(year => {
+              const availableTags = availableYearsAndTags[year] || [];
+              const selectedTags = tagsByYear[year] || [];
+              
+              return (
+                <div 
+                  key={year} 
+                  style={{
+                    marginBottom: 12,
+                    paddingLeft: 16,
+                    borderLeft: '3px solid #7c3aed',
+                    paddingTop: 4,
+                    paddingBottom: 4
+                  }}
+                >
+                  <div style={{fontSize: 12, fontWeight: 600, color: '#6b46c1', marginBottom: 8}}>
+                    {year}
+                  </div>
+                  <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+                    {availableTags.map(tag => (
+                      <button
+                        key={tag}
+                        className={'btn btn-xs ' + (selectedTags.includes(tag) ? 'primary' : '')}
+                        onClick={() => toggleTag(year, tag)}
+                        style={{
+                          minWidth: 36,
+                          padding: '6px 12px',
+                          borderRadius: 16,
+                          fontSize: 13
+                        }}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        
+        {/* Type Filter */}
+        <div style={{marginBottom: 20}}>
+          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+            Transaction Type
+          </label>
+          <div style={{display: 'inline-flex', gap: 0, backgroundColor: '#f3f4f6', borderRadius: 20, padding: 4}}>
+            <button
+              className={'btn btn-xs ' + (selectedType === 'Expense' ? 'primary' : '')}
+              onClick={() => setSelectedType('Expense')}
+              style={{
+                borderRadius: 16,
+                background: selectedType === 'Expense' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : 'transparent',
+                color: selectedType === 'Expense' ? '#fff' : '#4b5563',
+                border: 'none',
+                boxShadow: selectedType === 'Expense' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none'
+              }}
+            >
+              Expenses
+            </button>
+            <button
+              className={'btn btn-xs ' + (selectedType === 'Income' ? 'primary' : '')}
+              onClick={() => setSelectedType('Income')}
+              style={{
+                borderRadius: 16,
+                background: selectedType === 'Income' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : 'transparent',
+                color: selectedType === 'Income' ? '#fff' : '#4b5563',
+                border: 'none',
+                boxShadow: selectedType === 'Income' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none'
+              }}
+            >
+              Incomes
+            </button>
+          </div>
+        </div>
+        
+        {/* Category Filter */}
+        <div style={{marginBottom: 20}}>
+          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+            Categories {selectedCategories.length > 0 && (
+              <span style={{fontWeight: 400, color: '#667085'}}>
+                ({selectedCategories.length} selected)
+              </span>
+            )}
+          </label>
+          <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+            {categoryOptions.map(cat => (
+              <button
+                key={cat}
+                className={'btn btn-xs ' + (selectedCategories.includes(cat) ? 'primary' : '')}
+                onClick={() => toggleCategory(cat)}
+                style={{
+                  borderRadius: 16,
+                  padding: '6px 12px',
+                  fontSize: 13
+                }}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        </div>
+        
+        {/* Subcategory Filter */}
+        {selectedCategories.length === 1 && subcategoryOptions.length > 0 && (
+          <div style={{marginBottom: 20}}>
+            <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+              Subcategories for "{selectedCategories[0]}" {selectedSubcategories.length > 0 && (
+                <span style={{fontWeight: 400, color: '#667085'}}>
+                  ({selectedSubcategories.length} selected)
+                </span>
+              )}
+            </label>
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+              {subcategoryOptions.map(sub => (
+                <button
+                  key={sub}
+                  className={'btn btn-xs ' + (selectedSubcategories.includes(sub) ? 'primary' : '')}
+                  onClick={() => toggleSubcategory(sub)}
+                  style={{
+                    borderRadius: 16,
+                    padding: '6px 12px',
+                    fontSize: 13
+                  }}
+                >
+                  {sub}
+                </button>
+              ))}
             </div>
           </div>
-          <div style={{overflowX: 'auto'}}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th>Subcategory</th>
-                  <th>Mean (₪)</th>
-                  <th>Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {incomeMeans.breakdown.map((item, idx) => (
-                  <tr key={idx}>
-                    <td>{item.category}</td>
-                    <td>{item.subcategory}</td>
-                    <td>₪{fmt2(item.mean)}</td>
-                    <td>{item.count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        )}
+        
+        {/* Calculate Button */}
+        <div style={{
+          display: 'flex',
+          gap: 12,
+          alignItems: 'center',
+          paddingTop: 16,
+          borderTop: '1px solid #e5e7eb'
+        }}>
+          <button
+            className="btn primary"
+            onClick={() => calculateStatistics('none')}
+            disabled={selectedMonthCount < 2 || calculating}
+            style={{
+              borderRadius: 12,
+              padding: '12px 24px',
+              fontSize: 14,
+              fontWeight: 700
+            }}
+          >
+            {calculating ? 'Calculating...' : '📊 Calculate Statistics'}
+          </button>
+          {error && (
+            <span style={{color: '#ef4444', fontSize: 13, fontWeight: 500}}>
+              {error}
+            </span>
+          )}
         </div>
-      )}
+      </div>
       
-      {/* Rollup Table */}
-      {rollup.data.length > 0 && (
-        <div className="panel">
-          <div className="section-title">📋 {typeFilter === 'All' ? 'All' : typeFilter} Transactions Rollup</div>
-          <div style={{overflowX: 'auto'}}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Year</th>
-                  <th>Tag</th>
-                  <th>Total (₪)</th>
-                  <th>Mean (₪)</th>
-                  <th>Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rollup.data.map((item, idx) => (
-                  <tr key={idx}>
-                    <td>{item.year}</td>
-                    <td>{item.tag}</td>
-                    <td>₪{fmt2(item.total)}</td>
-                    <td>₪{fmt2(item.mean)}</td>
-                    <td>{item.count}</td>
+      {/* Results */}
+      {statsData && statsData.summary && (
+        <React.Fragment>
+          {/* Summary Statistics Card */}
+          <div className="panel" style={{marginBottom: 24, borderRadius: 16, padding: 24}}>
+            <div style={{marginBottom: 16}}>
+              <h3 style={{margin: 0, fontSize: 18, fontWeight: 700, color: '#30334b'}}>
+                Summary Statistics
+              </h3>
+              <p style={{margin: '4px 0 0', fontSize: 13, color: '#667085'}}>
+                Based on {selectedMonthCount} selected month{selectedMonthCount !== 1 ? 's' : ''}, {selectedType.toLowerCase()} transactions
+              </p>
+            </div>
+            
+            <div style={{overflowX: 'auto'}}>
+              <table>
+                <thead>
+                  <tr style={{background: 'linear-gradient(180deg, #8b5cf6, #7c3aed)'}}>
+                    <th style={{textAlign: 'left', fontSize: 13, letterSpacing: '0.5px'}}>Metric</th>
+                    <th style={{textAlign: 'right', fontSize: 13, letterSpacing: '0.5px'}}>Amount (₪)</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style={{fontSize: 14, fontWeight: 600}}>Mean Monthly Amount</td>
+                    <td style={{textAlign: 'right', fontSize: 15, fontWeight: 700, color: '#6b46c1'}}>
+                      ₪{fmt2(statsData.summary.avg_monthly)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{fontSize: 14, fontWeight: 600}}>Median Monthly Amount</td>
+                    <td style={{textAlign: 'right', fontSize: 15, fontWeight: 700, color: '#6b46c1'}}>
+                      ₪{fmt2(statsData.summary.median_monthly)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{fontSize: 14, fontWeight: 600}}>Min Monthly Amount</td>
+                    <td style={{textAlign: 'right', fontSize: 15, fontWeight: 700, color: '#6b46c1'}}>
+                      ₪{fmt2(statsData.summary.min_monthly)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{fontSize: 14, fontWeight: 600}}>Max Monthly Amount</td>
+                    <td style={{textAlign: 'right', fontSize: 15, fontWeight: 700, color: '#6b46c1'}}>
+                      ₪{fmt2(statsData.summary.max_monthly)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+          
+          {/* Top Categories Card */}
+          {statsData.top_categories && statsData.top_categories.length > 0 && (
+            <div className="panel" style={{borderRadius: 16, padding: 24}}>
+              <div style={{marginBottom: 16}}>
+                <h3 style={{margin: 0, fontSize: 18, fontWeight: 700, color: '#30334b'}}>
+                  🏆 Top {selectedCategories.length === 1 ? 'Subcategories' : 'Categories'}
+                </h3>
+                <p style={{margin: '4px 0 0', fontSize: 13, color: '#667085'}}>
+                  Highest spending {selectedCategories.length === 1 ? 'subcategories' : 'categories'} in the selected period
+                </p>
+              </div>
+              
+              <div style={{overflowX: 'auto'}}>
+                <table>
+                  <thead>
+                    <tr style={{background: 'linear-gradient(180deg, #8b5cf6, #7c3aed)'}}>
+                      <th style={{width: 60, fontSize: 13, letterSpacing: '0.5px'}}>Rank</th>
+                      <th style={{textAlign: 'left', fontSize: 13, letterSpacing: '0.5px'}}>
+                        {selectedCategories.length === 1 ? 'Subcategory' : 'Category'}
+                      </th>
+                      <th style={{textAlign: 'right', fontSize: 13, letterSpacing: '0.5px'}}>Total (₪)</th>
+                      <th style={{textAlign: 'right', fontSize: 13, letterSpacing: '0.5px'}}>Avg/Month (₪)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statsData.top_categories.map((item, idx) => (
+                      <tr key={idx}>
+                        <td style={{textAlign: 'center'}}>
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: 28,
+                            height: 28,
+                            borderRadius: '50%',
+                            background: idx === 0 ? '#fbbf24' : idx === 1 ? '#d1d5db' : idx === 2 ? '#f59e0b' : '#e5e7eb',
+                            color: idx < 2 ? '#fff' : '#4b5563',
+                            fontWeight: 800,
+                            fontSize: 13
+                          }}>
+                            {idx + 1}
+                          </span>
+                        </td>
+                        <td style={{fontSize: 14, fontWeight: 600}}>{item.name}</td>
+                        <td style={{textAlign: 'right', fontSize: 14, fontWeight: 700, color: '#6b46c1'}}>
+                          ₪{fmt2(item.total)}
+                        </td>
+                        <td style={{textAlign: 'right', fontSize: 14, color: '#667085'}}>
+                          ₪{fmt2(item.avg_per_month)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </React.Fragment>
       )}
-    </React.Fragment>
+    </div>
   );
 }
 
