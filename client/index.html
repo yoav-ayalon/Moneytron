@@ -237,6 +237,31 @@ function asArray(x){ if(Array.isArray(x)) return x; if(x && Array.isArray(x.item
 function asCategories(x){ if(x && typeof x==='object' && !Array.isArray(x)) return x; if(Array.isArray(x)){var o={}; x.forEach(it=>{ if(typeof it==='string') o[it]=[]; else if(it && it.name) o[it.name]=Array.isArray(it.subcategories)?it.subcategories.slice():[]; }); return o;} return {}; }
 
 /* ================== File parsing (v7) ================== */
+/* 
+ * Enhanced to support:
+ * 1. CSV files with combined "זכות/חובה ₪" column (hzCol)
+ *    - Positive values = Income, Negative values = Expense
+ * 2. XLS/XLSX files with separate חובה/זכות columns
+ *    - חובה = Expense, זכות = Income
+ * 3. Various header formats: "ת. פעולה", "תנועה", "תיאור", etc.
+ * 4. Improved heuristic detection for header-less tables
+ * 5. Debug logging controlled by MT_DEBUG flag for XLS troubleshooting
+ * 6. HTML-based XLS files (common bank exports) - strips HTML tags
+ */
+
+// Strip HTML tags and decode entities from text (for HTML-based XLS files)
+function cleanHTML(str){
+  if (!str) return '';
+  let s = String(str);
+  // Remove HTML tags
+  s = s.replace(/<[^>]*>/g, ' ');
+  // Decode common HTML entities
+  s = s.replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  // Collapse multiple spaces
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
 function bestNameFromRow_v6(row, avoidCols){
   const avoid = new Set((avoidCols||[]).filter(x=>x!=null));
   let best = {text:'', score:-1};
@@ -244,12 +269,35 @@ function bestNameFromRow_v6(row, avoidCols){
     if (avoid.has(c)) continue;
     const raw = row[c];
     if (raw==null) continue;
-    const s = String(raw).trim();
+    
+    // Clean HTML tags first
+    let s = cleanHTML(raw);
     if (!s) continue;
+    
+    // Skip pure punctuation
+    if (/^[:.\-_,;!?]+$/.test(s)) continue;
+    
+    // Skip if it looks like a date
     if (parseDateFlex_v6(raw)) continue;
+    if (/\d{4}/.test(s) || /GMT|UTC/.test(s) || /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i.test(s)) continue;
+    
+    // Skip if mostly numbers (like "5,072.03 0.00 43,350.01")
+    if (/^[\d,.\s\-₪$€£]+$/.test(s)) continue;
+    
+    // Skip garbage characters (lots of x, «, », etc.)
+    if (/^[x\s«»§=íï\-]+$/i.test(s)) continue;
+    
+    // Must have letters (Hebrew or Latin)
     if (!/[A-Za-z\u0590-\u05FF]/.test(s)) continue;
-    if (!isNaN(Number(s.replace(/[,\s₪$€£]/g,'')))) continue;
-    const score = s.length;
+    
+    // Skip pure numbers (but allow text with numbers mixed in)
+    const cleaned = s.replace(/[,\s₪$€£]/g,'');
+    if (!isNaN(Number(cleaned)) && !/[A-Za-z\u0590-\u05FF]/.test(cleaned)) continue;
+    
+    // Prefer text with more Hebrew/Latin letters (better quality names)
+    const letterCount = (s.match(/[A-Za-z\u0590-\u05FF]/g) || []).length;
+    const score = letterCount * 10 + s.length; // Prioritize letter count over total length
+    
     if (score > best.score) best = {text:s, score};
   }
   return best.text || '';
@@ -290,6 +338,11 @@ function numify_v6(v){
   if (typeof v==='number' && Number.isFinite(v)) return v;
   let s = String(v).trim();
   if (!s) return null;
+  
+  // Clean HTML tags if present (for HTML-based XLS files)
+  s = cleanHTML(s);
+  if (!s) return null;
+  
   // normalize spaces and RTL marks
   s = s.replace(/\u00a0/g,'').replace(/\u200f|\u200e/g,'');
   let neg = false;
@@ -367,17 +420,39 @@ function mapFromHeaderRow_v6(matrix, r){
   function idx(pred){ for (var i=0;i<norm.length;i++){ if (pred(norm[i], i)) return i; } return -1; }
 
     // Prefer exact Leumi "תאריך העסקה" (note: normAZ removes spaces -> 'תאריךהעסקה')
-    let dateCol  = idx(x=>x.includes('תאריךהעסקה') || x === 'תאריך');
+    // Also handle variations like "ת. פעולה", "ת. ערך", etc.
+    let dateCol  = idx(x=>x.includes('תאריךהעסקה') || x === 'תאריך' || x.includes('תפעולה') || x.includes('תערך'));
     if (dateCol < 0) dateCol = idx(x=>x.includes('תאריך') || x.includes('date'));
 
-  // NAME / DESCRIPTION column (loose)
-  let   nameCol  = idx(x=>
-      x.includes('שםביתעסק')||x.includes('שםעסק')|| (x.includes('שם') && x.includes('עסק')) ||
+  // NAME / DESCRIPTION column (loose) - enhanced for various XLS formats
+  // Priority order: תיאור התנועה > תיאור > פרטים > others
+  // But EXCLUDE: ערוץ ביצוע, עמלה, אסמכתא, יתרה (execution channel, commission, reference, balance)
+  
+  if (MT_DEBUG) {
+    console.log('[MoneyTron][Debug] Detecting nameCol from header row:', row);
+    console.log('[MoneyTron][Debug] Normalized header:', norm);
+  }
+  
+  let nameCol = idx(x=> (x.includes('תיאורהתנועה') || x.includes('תיאורתנועה')) && !x.includes('ערוץ') && !x.includes('עמלה') && !x.includes('אסמכתא'));  // "תיאור התנועה" - highest priority
+  
+  if (MT_DEBUG && nameCol >= 0) {
+    console.log('[MoneyTron][Debug] Found תיאור התנועה at column', nameCol, ':', row[nameCol]);
+  }
+  
+  if (nameCol < 0) {
+    nameCol = idx(x=>
+      !x.includes('ערוץ') && !x.includes('ביצוע') && !x.includes('עמלה') && !x.includes('אסמכתא') && !x.includes('יתרה') &&  // Exclude these columns
+      (x.includes('שםביתעסק')||x.includes('שםעסק')|| (x.includes('שם') && x.includes('עסק')) ||
       x.includes('תיאור')||x.includes('פרטים')||x.includes('תיאורפעולה')||x.includes('פרטיתנועה')||x.includes('פירוט')||
-      x.includes('description')
-  );
+      x.includes('description') || x.includes('תנועה'))  // Added "תנועה" for some XLS files
+    );
+    if (MT_DEBUG && nameCol >= 0) {
+      console.log('[MoneyTron][Debug] Found name column (fallback) at column', nameCol, ':', row[nameCol]);
+    }
+  }
   const hCol     = idx(x=>x==='חובה');
   const zCol     = idx(x=>x==='זכות');
+  const hzCol    = idx(x=>x.includes('זכותחובה'));
 
   let debitCol = idx(x=> (x.includes('סכוםחיוב')||x.includes('לתשלום')||x.includes('לחיוב')||x.includes('בשח')) && !isBalanceLabel_v6(x));
   let transCol = idx(x=> (x.includes('סכוםעסקה')||x.includes('amount')) && !isBalanceLabel_v6(x));
@@ -402,21 +477,22 @@ function mapFromHeaderRow_v6(matrix, r){
     nameCol = best.c;
   }
 
-  return {row:r, dateCol, nameCol, transCol:(transCol>=0?transCol:null), debitCol:(debitCol>=0?debitCol:null), hCol:(hCol>=0?hCol:null), zCol:(zCol>=0?zCol:null)};
+  return {row:r, dateCol, nameCol, transCol:(transCol>=0?transCol:null), debitCol:(debitCol>=0?debitCol:null), hCol:(hCol>=0?hCol:null), zCol:(zCol>=0?zCol:null), hzCol:(hzCol>=0?hzCol:null)};
 }
 function findHeaderRows_v6(matrix){
   var rows=[];
   for (var r=0;r<matrix.length;r++){
     var norm=(matrix[r]||[]).map(normAZ);
-    var hasDate=norm.some(x=>x.includes('תאריך')||x.includes('date'));
-    var hasName=norm.some(x=>x.includes('שםביתעסק')||x.includes('שםעסק')||(x.includes('שם')&&x.includes('עסק'))||x.includes('תיאור')||x.includes('פרטים')||x.includes('תיאורפעולה')||x.includes('פרטיתנועה')||x.includes('פירוט'));
+    var hasDate=norm.some(x=>x.includes('תאריך')||x.includes('date')||x.includes('תפעולה')||x.includes('תערך'));
+    var hasName=norm.some(x=>x.includes('תיאורהתנועה')||x.includes('תיאורתנועה')||x.includes('שםביתעסק')||x.includes('שםעסק')||(x.includes('שם')&&x.includes('עסק'))||x.includes('תיאור')||x.includes('פרטים')||x.includes('תיאורפעולה')||x.includes('פרטיתנועה')||x.includes('פירוט')||x.includes('תנועה'));
     var hasTxn = norm.some(x =>
     x.includes('סכוםהעסקה') || x.includes('סכוםעסקה') || (x.includes('עסקה') && x.includes('סכום'))
     );
     var hasDeb = norm.some(x =>
     x.includes('סכוםהחיוב') || x.includes('סכוםחיוב') || x.includes('לתשלום') || x.includes('לחיוב') || x.includes('בשח')
     );
-    if (hasDate && (hasName || hasTxn || hasDeb)) rows.push(r);
+    var hasHZ = norm.some(x => x === 'חובה' || x === 'זכות' || x.includes('זכותחובה'));  // Check for separate or combined חובה/זכות columns
+    if (hasDate && (hasName || hasTxn || hasDeb || hasHZ)) rows.push(r);
   }
   return rows;
 }
@@ -465,9 +541,19 @@ function detectHeuristic_v6(matrix){
 
 /* ---------- SHEET extractor (v7) ---------- */
 /* ---------- SHEET extractor v7 (carry-forward date for merged rows) ---------- */
-function extractFromSheet_v6(ws, sheetName){
-  const mat = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+function extractFromSheet_v6(ws, sheetName, fileName){
+  const isXLS = fileName && /\.xls$/i.test(fileName);
+  // For XLS files (HTML-based), use raw:false to get formatted text which may preserve encoding better
+  const mat = XLSX.utils.sheet_to_json(ws,{header:1, raw:!isXLS, defval:null});
   const rows = [];
+
+  // Debug logging for XLS files
+  if (MT_DEBUG && isXLS){
+    console.log('[MoneyTron][XLS Debug] Sheet:', sheetName, 'Total rows in mat:', mat.length);
+    if (mat.length === 0){
+      console.log('[MoneyTron][XLS Debug] WARNING: Matrix is EMPTY!');
+    }
+  }
 
   function toISO(d){
     if (d instanceof Date) return dayjs(d).format('YYYY-MM-DD');
@@ -525,22 +611,33 @@ function extractFromSheet_v6(ws, sheetName){
   // quick header detector
   function isHeaderRow(row){
     const n = (row||[]).map(normAZ);
-    const hasDate = n.some(x => x.includes('תאריך') || x.includes('date'));
+    const hasDate = n.some(x => x.includes('תאריך') || x.includes('date') || x.includes('תפעולה') || x.includes('תערך'));
     const hasName = n.some(x =>
+      x.includes('תיאורהתנועה') || x.includes('תיאורתנועה') ||  // "תיאור התנועה" - most common
       x.includes('שםביתעסק') || x.includes('שםעסק') || (x.includes('שם') && x.includes('עסק')) ||
       x.includes('תיאור') || x.includes('פרטים') || x.includes('תיאורפעולה') ||
-      x.includes('פרטיתנועה') || x.includes('פירוט') || x.includes('description')
+      x.includes('פרטיתנועה') || x.includes('פירוט') || x.includes('description') ||
+      x.includes('תנועה') || x.includes('אסמכתא')  // Added for "תנועה" and "אסמכתא" columns
     );
     const hasTxn  = n.some(x => x.includes('סכוםעסקה') || (x.includes('עסקה') && x.includes('סכום')) || x.includes('amount'));
-    const hasDeb  = n.some(x => x.includes('סכוםחיוב') || x.includes('לתשלום') || x.includes('לחיוב') || x.includes('בשח'));
-    return hasDate && (hasName || hasTxn || hasDeb);
+    const hasDeb  = n.some(x => x.includes('סכוםחיוב') || x.includes('לתשלום') || x.includes('לחיוב') || x.includes('בשח') || x.includes('סכום'));
+    const hasHZ   = n.some(x => x === 'חובה' || x === 'זכות' || x.includes('זכותחובה'));  // Check for separate or combined חובה/זכות columns
+    
+    const result = hasDate && (hasName || hasTxn || hasDeb || hasHZ);
+    
+    if (MT_DEBUG && isXLS && result){
+      // Only log when we actually find a header
+      console.log('[MoneyTron][XLS Debug] HEADER FOUND! Row:', n, {hasDate, hasName, hasTxn, hasDeb, hasHZ});
+    }
+    
+    return result;
   }
 
   // A very permissive detector for a data row (date + name + any number) used for header-less tables
   function looksLikeTxnRow(row){
     if (!row || !row.length) return false;
-    // date: any cell that can parse as date OR a previous carried date exists
-    const hasDateAny = row.some(v=>!!parseDateFlex_v6(v));
+    // date: any cell that can parse as date OR we have a carried date (lastGoodDate)
+    const hasDateAny = row.some(v=>!!parseDateFlex_v6(v)) || !!lastGoodDate;
     // name-like: any text cell with Hebrew/Latin letters that isn't a number
     const hasNameAny = row.some(v=>{
       const s=String(v==null?'':v).trim();
@@ -548,16 +645,20 @@ function extractFromSheet_v6(ws, sheetName){
     });
     // amount: any numeric-ish cell
     const hasAmtAny = row.some(v=>{ const n=numify_v6(v); return n!=null && Math.abs(n)>0; });
-    return (hasNameAny && hasAmtAny && (hasDateAny));
+    return (hasNameAny && hasAmtAny && hasDateAny);
   }
 
-  let map = null; // {dateCol, nameCol, transCol, debitCol, hCol, zCol}
+  let map = null; // {dateCol, nameCol, transCol, debitCol, hCol, zCol, hzCol}
   let lastGoodDate = null;
   // Pre-compute a sheet-level heuristic mapping in case we never see a header
   const heur = detectHeuristic_v6(mat) || {};
+  
+  if (MT_DEBUG && isXLS){
+    console.log('[MoneyTron][XLS Debug] Heuristic mapping:', heur);
+  }
 
   function rowHasAnyAmount(row){
-    const probes = [map && map.hCol, map && map.zCol, map && map.debitCol, map && map.transCol].filter(i=>i!=null);
+    const probes = [map && map.hCol, map && map.zCol, map && map.debitCol, map && map.transCol, map && map.hzCol].filter(i=>i!=null);
     for (const c of probes){ const n = numify_v6(row[c]); if (n!=null && Math.abs(n)>0) return true; }
     for (let c=0;c<row.length;c++){
       if (probes.includes(c)) continue;
@@ -567,9 +668,33 @@ function extractFromSheet_v6(ws, sheetName){
   }
   function rowBestName(row){
     let name = (map && map.nameCol!=null) ? row[map.nameCol] : null;
-    if (name==null || String(name).trim()===''){
-      name = bestNameFromRow_v6(row, [map && map.dateCol, map && map.hCol, map && map.zCol, map && map.debitCol, map && map.transCol]);
+    const originalName = name;
+    
+    // Clean HTML tags if present (for HTML-based XLS files)
+    name = cleanHTML(name);
+    const nameStr = String(name||'').trim();
+    
+    // Check if it's mostly numbers and punctuation (like "5,072.03 0.00 43,350.01")
+    const looksLikeNumbers = nameStr && /^[\d,.\s\-₪$€£]+$/.test(nameStr);
+    
+    // Check if it's garbage characters (lots of x and special chars)
+    const looksLikeGarbage = nameStr && /^[x\s«»§=íï\-]+$/i.test(nameStr);
+    
+    // Check if name has meaningful text (Hebrew or Latin letters)
+    const hasLetters = nameStr && /[A-Za-z\u0590-\u05FF]/.test(nameStr);
+    
+    // Only use fallback if: empty, pure punctuation, pure numbers, garbage, OR no letters at all
+    const needsFallback = !nameStr || /^[:.\-_]+$/.test(nameStr) || looksLikeNumbers || looksLikeGarbage || !hasLetters;
+    
+    if (needsFallback){
+      const fallbackName = bestNameFromRow_v6(row, [map && map.dateCol, map && map.hCol, map && map.zCol, map && map.debitCol, map && map.transCol, map && map.hzCol]);
+      if (MT_DEBUG){
+        console.log('[MoneyTron][Debug] Name fallback triggered. Original:', originalName, '→ Cleaned:', nameStr, '→ Fallback:', fallbackName);
+        console.log('[MoneyTron][Debug] Reasons - empty:', !nameStr, 'punct:', /^[:.\-_]+$/.test(nameStr), 'numbers:', looksLikeNumbers, 'garbage:', looksLikeGarbage, 'noLetters:', !hasLetters);
+      }
+      name = fallbackName;
     }
+    
     const s = String(name||'').trim();
     return s || '';
   }
@@ -587,8 +712,16 @@ function extractFromSheet_v6(ws, sheetName){
         transCol: (m.transCol!=null ? m.transCol : null),
         debitCol: (m.debitCol!=null ? m.debitCol : null),
         hCol    : (m.hCol!=null ? m.hCol : null),
-        zCol    : (m.zCol!=null ? m.zCol : null)
+        zCol    : (m.zCol!=null ? m.zCol : null),
+        hzCol   : (m.hzCol!=null ? m.hzCol : null)
       };
+      
+      if (MT_DEBUG){
+        console.log('[MoneyTron][Debug] Found header at row', r);
+        console.log('[MoneyTron][Debug] Header row:', row);
+        console.log('[MoneyTron][Debug] Map:', map);
+      }
+      
       lastGoodDate = null;
       continue;
     }
@@ -610,8 +743,14 @@ function extractFromSheet_v6(ws, sheetName){
         transCol: heur.transCol!=null?heur.transCol:null,
         debitCol: heur.debitCol!=null?heur.debitCol:null,
         hCol    : null,
-        zCol    : null
+        zCol    : null,
+        hzCol   : null
       };
+      
+      if (MT_DEBUG && isXLS){
+        console.log('[MoneyTron][XLS Debug] Using heuristic mapping at row', r, 'map:', map);
+      }
+      
       // set lastGoodDate if this very row has a date
       const dTry = map.dateCol!=null ? row[map.dateCol] : null;
       const d0 = parseDateFlex_v6(dTry);
@@ -633,14 +772,37 @@ function extractFromSheet_v6(ws, sheetName){
         // leave d as null so carry-forward can apply
       }
     }
+    
+    // If no date in mapped column, try first few columns (common in XLS)
+    if (!d && !map.dateCol) {
+      for (let c=0; c<Math.min(3, row.length); c++){
+        d = parseDateFlex_v6(row[c]);
+        if (d) break;
+      }
+    }
     // 2) compute amounts/name first (we'll decide which date to use after)
     let creditFlag = null, t=null, db=null;
 
     if (map.hCol!=null || map.zCol!=null){
       const h = map.hCol!=null ? numify_v6(row[map.hCol]) : null;
       const z = map.zCol!=null ? numify_v6(row[map.zCol]) : null;
+      
+      if (MT_DEBUG && isXLS && r < 50){
+        console.log('[MoneyTron][XLS Debug] Row', r, 'חובה/זכות check - hCol:', map.hCol, 'h:', h, 'zCol:', map.zCol, 'z:', z);
+      }
+      
       if (h!=null && Math.abs(h)>0){ t=h; db=h; creditFlag=false; }
       else if (z!=null && Math.abs(z)>0){ t=z; db=z; creditFlag=true; }
+    }
+    // Combined זכות/חובה column (e.g., "זכות/חובה ₪")
+    if ((t==null || db==null) && map.hzCol!=null){
+      const hz = numify_v6(row[map.hzCol]);
+      if (hz != null && Math.abs(hz) > 0){
+        t = hz;
+        db = hz;
+        // Positive → credit (Income), negative → debit (Expense)
+        creditFlag = hz > 0;
+      }
     }
     if ((t==null || db==null) && map.debitCol!=null){
       const dval = numify_v6(row[map.debitCol]);
@@ -653,7 +815,7 @@ function extractFromSheet_v6(ws, sheetName){
     if (t==null && db==null){
       let best = {n:null,abs:0};
       for (let c=0;c<row.length;c++){
-        if ([map.hCol,map.zCol,map.debitCol,map.transCol].includes(c)) continue;
+        if ([map.hCol,map.zCol,map.debitCol,map.transCol,map.hzCol].includes(c)) continue;
         const n = numify_v6(row[c]);
         if (n!=null && Math.abs(n)>best.abs){ best={n,abs:Math.abs(n)}; }
       }
@@ -668,9 +830,20 @@ function extractFromSheet_v6(ws, sheetName){
     }
     if (d) lastGoodDate = d; // remember good date for following merged rows
 
+    if (MT_DEBUG && r >= 0 && r <= 5){  // Log first 5 data rows for CSV too
+      console.log('[MoneyTron][Debug] Row', r, '- nameCol:', map.nameCol, 'extracted name:', (name ? name.slice(0,40) : 'NO_NAME'), 'amount:', t || db);
+      if (map.nameCol != null) {
+        console.log('[MoneyTron][Debug] Raw value at nameCol:', row[map.nameCol]);
+      }
+    }
+
     if (!d || !name) continue;
 
     pushRow(d, name, t, db, creditFlag);
+  }
+
+  if (MT_DEBUG && isXLS){
+    console.log('[MoneyTron][XLS Debug] Final extracted rows:', rows.length);
   }
 
   return rows;
@@ -680,15 +853,44 @@ function extractFromWorkbook_v6(file){
   return new Promise(function(res, rej){
     const reader = new FileReader();
     const isCSV = /\.csv$/i.test(file.name);
+    const isXLS = /\.xls$/i.test(file.name);
     reader.onload = function(e){
       try{
         let all = [];
         const data = isCSV ? e.target.result : new Uint8Array(e.target.result);
         const wb = isCSV ? XLSX.read(data, { type:'string', cellDates:true })
                          : XLSX.read(data, { type:'array',  cellDates:true });
+        
+        // Debug logging for XLS files
+        if (MT_DEBUG && isXLS){
+          console.log('[MoneyTron][XLS Debug] File:', file.name);
+          console.log('[MoneyTron][XLS Debug] SheetNames:', wb.SheetNames);
+          console.log('[MoneyTron][XLS Debug] Workbook object:', wb);
+          // Log first sheet details
+          if (wb.SheetNames.length > 0){
+            const firstSheet = wb.Sheets[wb.SheetNames[0]];
+            console.log('[MoneyTron][XLS Debug] First sheet object:', firstSheet);
+            console.log('[MoneyTron][XLS Debug] First sheet range:', firstSheet['!ref']);
+            
+            // Try alternate parsing with different options to preserve text better
+            const altMat = XLSX.utils.sheet_to_json(firstSheet, {header:1, raw:false, defval:null});
+            console.log('[MoneyTron][XLS Debug] Alternate parse (raw:false) first 5 rows:', altMat.slice(0,5));
+          }
+        }
+        
+        // Debug: Show first few rows of CSV parsing
+        if (MT_DEBUG && isCSV && wb.SheetNames.length > 0){
+          const firstSheet = wb.Sheets[wb.SheetNames[0]];
+          const mat = XLSX.utils.sheet_to_json(firstSheet, {header:1, raw:true, defval:null});
+          console.log('[MoneyTron][CSV Debug] File:', file.name);
+          console.log('[MoneyTron][CSV Debug] First 3 rows:', mat.slice(0,3));
+          console.log('[MoneyTron][CSV Debug] Header row:', mat[0]);
+          console.log('[MoneyTron][CSV Debug] Normalized header:', (mat[0] || []).map(normAZ));
+        }
+        
         wb.SheetNames.forEach(sn=>{
           const ws = wb.Sheets[sn]; if (!ws) return;
-          all = all.concat(extractFromSheet_v6(ws, sn));
+          all = all.concat(extractFromSheet_v6(ws, sn, file.name));
         });
         if (MT_DEBUG){ console.log('[MoneyTron][parsed]',{file:file.name,rowsAll:all.length,sample:all.slice(0,12)}); alert('Parsed '+all.length+' rows from '+file.name); }
         res(all);
@@ -1586,7 +1788,7 @@ function DataTab({past,categories,onSaved}){
 /* ---------- Summary (charts etc.) ---------- */
 function SummaryTab({past,active}){
   const [err,setErr]=React.useState(''); const [selectedMonth,setSelectedMonth]=React.useState(''); const [subPieCat,setSubPieCat]=React.useState(''); const [expanded,setExpanded]=React.useState({});
-  const [monthRangeStart, setMonthRangeStart] = React.useState(0); // Starting index for 6-month range
+  const [monthRangeStart, setMonthRangeStart] = React.useState(-1); // Starting index for 6-month range (-1 = not initialized yet)
   const mRef=React.useRef(null), nRef=React.useRef(null), catRef=React.useRef(null), subRef=React.useRef(null);
   const mChart=React.useRef(null), nChart=React.useRef(null), catPie=React.useRef(null), subPie=React.useRef(null);
   // Updated aggregation: properly handle income and expense categories/subcategories with correct signs
@@ -1670,20 +1872,62 @@ function SummaryTab({past,active}){
       return months; // Show all months if 6 or fewer
     }
     
-    // Calculate the slice based on monthRangeStart
-    const startIdx = Math.max(0, Math.min(monthRangeStart, totalMonths - maxDisplayMonths));
+    // Calculate the slice based on monthRangeStart (-1 means not initialized yet, default to last 6)
+    const effectiveStart = monthRangeStart < 0 ? Math.max(0, totalMonths - maxDisplayMonths) : monthRangeStart;
+    const startIdx = Math.max(0, Math.min(effectiveStart, totalMonths - maxDisplayMonths));
     return months.slice(startIdx, startIdx + maxDisplayMonths);
   }, [months, monthRangeStart, totalMonths]);
   
-  // Update monthRangeStart to show most recent months by default
+  // Initialize to show most recent months by default (on first load or when totalMonths increases)
+  const prevTotalMonthsRef = React.useRef(totalMonths);
+  const hasInitialized = React.useRef(false);
   React.useEffect(() => {
-    if (totalMonths > maxDisplayMonths && monthRangeStart === 0) {
+    const prevTotal = prevTotalMonthsRef.current;
+    
+    // Initialize on first load to show last 6 months
+    if (!hasInitialized.current && totalMonths > 0) {
+      hasInitialized.current = true;
+      if (totalMonths > maxDisplayMonths) {
+        setMonthRangeStart(totalMonths - maxDisplayMonths);
+      } else {
+        setMonthRangeStart(0);
+      }
+    }
+    // Or update when new months are added (but not when user navigates)
+    else if (totalMonths > maxDisplayMonths && totalMonths > prevTotal) {
       setMonthRangeStart(totalMonths - maxDisplayMonths);
     }
-  }, [totalMonths, monthRangeStart]);
+    
+    prevTotalMonthsRef.current = totalMonths;
+  }, [totalMonths]);
   
-  const canNavigatePrev = monthRangeStart > 0;
-  const canNavigateNext = monthRangeStart < totalMonths - maxDisplayMonths;
+  const canNavigatePrev = true; // Always allow (wraps around)
+  const canNavigateNext = true; // Always allow (wraps around)
+  
+  // Handle Previous button - slide back one month, wrap only at the beginning
+  function handlePrevious() {
+    const newStart = monthRangeStart - 1;
+    if (newStart < 0) {
+      // Wrap to the end (last possible window)
+      setMonthRangeStart(Math.max(0, totalMonths - maxDisplayMonths));
+    } else {
+      // Normal slide back
+      setMonthRangeStart(newStart);
+    }
+  }
+  
+  // Handle Next button - slide forward one month, wrap only at the end
+  function handleNext() {
+    const newStart = monthRangeStart + 1;
+    const maxStart = Math.max(0, totalMonths - maxDisplayMonths);
+    if (newStart > maxStart) {
+      // Wrap to the beginning
+      setMonthRangeStart(0);
+    } else {
+      // Normal slide forward
+      setMonthRangeStart(newStart);
+    }
+  }
   React.useEffect(()=>{ try{ if(!months.length){ setSelectedMonth(''); setSubPieCat(''); return; } var def=selectedMonth&&months.includes(selectedMonth)?selectedMonth:months[months.length-1]; setSelectedMonth(def); var cats=Object.keys(monthCategoryDataAll[def]||{}); setSubPieCat(prev=> (prev && cats.includes(prev))?prev:(cats[0]||'')); }catch(e){ setErr('Init error: '+e.message);} },[months.join(','), JSON.stringify(monthCategoryDataAll)]);
   React.useEffect(()=>{ try{
     if(!active) return;
@@ -1793,10 +2037,9 @@ function SummaryTab({past,active}){
         <div className="controls" style={{marginBottom:10}}>
           <button 
             className="btn btn-xs" 
-            onClick={() => setMonthRangeStart(Math.max(0, monthRangeStart - 1))}
-            disabled={!canNavigatePrev}
+            onClick={handlePrevious}
           >
-            ← Previous Month
+            ← Previous
           </button>
           <span className="muted" style={{margin: '0 12px'}}>
             Showing months {displayMonths[0]} to {displayMonths[displayMonths.length-1]} 
@@ -1804,10 +2047,9 @@ function SummaryTab({past,active}){
           </span>
           <button 
             className="btn btn-xs" 
-            onClick={() => setMonthRangeStart(Math.min(totalMonths - maxDisplayMonths, monthRangeStart + 1))}
-            disabled={!canNavigateNext}
+            onClick={handleNext}
           >
-            Next Month →
+            Next →
           </button>
           <button 
             className="btn btn-xs" 
@@ -1983,6 +2225,7 @@ function StatisticsTab({past, categories}){
   const [selectedType, setSelectedType] = React.useState('Expense'); // 'Expense' | 'Income'
   const [selectedCategories, setSelectedCategories] = React.useState([]); // array of category names
   const [selectedSubcategories, setSelectedSubcategories] = React.useState([]); // array of subcategory names
+  const [activeQuickSelect, setActiveQuickSelect] = React.useState(null); // Track which quick select is active: 'last3', 'last6', 'alltime', or null
   
   // Statistics results
   const [statsData, setStatsData] = React.useState(null);
@@ -2031,8 +2274,13 @@ function StatisticsTab({past, categories}){
   }, [categories]);
   
   const subcategoryOptions = React.useMemo(() => {
-    if (selectedCategories.length !== 1) return [];
-    return categories[selectedCategories[0]] || [];
+    // Get all subcategories for all selected categories
+    const allSubs = new Set();
+    selectedCategories.forEach(cat => {
+      const subs = categories[cat] || [];
+      subs.forEach(sub => allSubs.add(sub));
+    });
+    return Array.from(allSubs).sort();
   }, [selectedCategories, categories]);
   
   // Count selected month cells
@@ -2105,6 +2353,7 @@ function StatisticsTab({past, categories}){
     
     setSelectedYears(years);
     setTagsByYear(tagMap);
+    setActiveQuickSelect('last3');
     
     // Auto-calculate for Last 3 Months
     setTimeout(() => calculateStatistics('last3'), 100);
@@ -2135,6 +2384,7 @@ function StatisticsTab({past, categories}){
     
     setSelectedYears(years);
     setTagsByYear(tagMap);
+    setActiveQuickSelect('last6');
   }
   
   // Quick filter: All Time
@@ -2147,6 +2397,7 @@ function StatisticsTab({past, categories}){
     
     setSelectedYears(years);
     setTagsByYear(tagMap);
+    setActiveQuickSelect('alltime');
   }
   
   // Clear all filters
@@ -2157,26 +2408,66 @@ function StatisticsTab({past, categories}){
     setSelectedSubcategories([]);
     setStatsData(null);
     setError('');
+    setActiveQuickSelect(null);
   }
   
-  // Toggle category selection
+  // Toggle category selection - NEW: auto-select all subcategories
   function toggleCategory(cat) {
     if (selectedCategories.includes(cat)) {
+      // Deselecting: remove category and its subcategories
       setSelectedCategories(selectedCategories.filter(c => c !== cat));
-      setSelectedSubcategories([]);
+      const subsToRemove = categories[cat] || [];
+      setSelectedSubcategories(selectedSubcategories.filter(s => !subsToRemove.includes(s)));
     } else {
+      // Selecting: add category and auto-select all its subcategories
       setSelectedCategories([...selectedCategories, cat]);
-      setSelectedSubcategories([]);
+      const subsToAdd = categories[cat] || [];
+      const newSubs = [...new Set([...selectedSubcategories, ...subsToAdd])];
+      setSelectedSubcategories(newSubs);
     }
+    setActiveQuickSelect(null); // Clear quick select when manually changing
   }
   
-  // Toggle subcategory (only when exactly 1 category selected)
+  // Toggle subcategory
   function toggleSubcategory(sub) {
     if (selectedSubcategories.includes(sub)) {
       setSelectedSubcategories(selectedSubcategories.filter(s => s !== sub));
     } else {
       setSelectedSubcategories([...selectedSubcategories, sub]);
     }
+    setActiveQuickSelect(null); // Clear quick select when manually changing
+  }
+  
+  // Select All Categories - NEW
+  function selectAllCategories() {
+    const allCats = categoryOptions;
+    setSelectedCategories(allCats);
+    // Select all subcategories too
+    const allSubs = new Set();
+    allCats.forEach(cat => {
+      (categories[cat] || []).forEach(sub => allSubs.add(sub));
+    });
+    setSelectedSubcategories(Array.from(allSubs));
+    setActiveQuickSelect(null);
+  }
+  
+  // Clear All Categories - NEW
+  function clearAllCategories() {
+    setSelectedCategories([]);
+    setSelectedSubcategories([]);
+    setActiveQuickSelect(null);
+  }
+  
+  // Select All Subcategories - NEW
+  function selectAllSubcategories() {
+    setSelectedSubcategories(subcategoryOptions);
+    setActiveQuickSelect(null);
+  }
+  
+  // Clear All Subcategories - NEW
+  function clearAllSubcategories() {
+    setSelectedSubcategories([]);
+    setActiveQuickSelect(null);
   }
   
   // Calculate statistics
@@ -2259,118 +2550,177 @@ function StatisticsTab({past, categories}){
           </div>
         </div>
         
-        {/* Quick Filters */}
-        <div style={{marginBottom: 20}}>
-          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-            Quick Select
-          </label>
-          <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
-            <button 
-              className="btn btn-xs primary" 
-              onClick={quickFilterLast3}
-              style={{borderRadius: 20}}
-            >
-              Last 3 Months
-            </button>
-            <button 
-              className="btn btn-xs" 
-              onClick={quickFilterLast6}
-              style={{borderRadius: 20}}
-            >
-              Last 6 Months
-            </button>
-            <button 
-              className="btn btn-xs" 
-              onClick={quickFilterAllTime}
-              style={{borderRadius: 20}}
-            >
-              All Time
-            </button>
-            <button 
-              className="btn btn-xs ghost" 
-              onClick={clearFilters}
-              style={{borderRadius: 20}}
-            >
-              Clear All
-            </button>
-          </div>
-        </div>
-        
-        {/* Year Selection */}
-        <div style={{marginBottom: 20}}>
-          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-            Years
-          </label>
-          <div style={{display: 'flex', flexWrap: 'wrap', gap: 8}}>
-            {availableYears.map(year => (
-              <button
-                key={year}
-                className={'btn btn-xs ' + (selectedYears.includes(year) ? 'primary' : '')}
-                onClick={() => toggleYear(year)}
+        {/* TIME RANGE SECTION */}
+        <div style={{
+          marginBottom: 24,
+          padding: 16,
+          background: '#f9fafb',
+          borderRadius: 12,
+          border: '1px solid #e5e7eb'
+        }}>
+          <h4 style={{margin: '0 0 4px 0', fontSize: 15, fontWeight: 700, color: '#30334b'}}>
+            ⏱️ Time Range
+          </h4>
+          <p style={{margin: '0 0 12px 0', fontSize: 12, color: '#667085'}}>
+            Choose which months to include in the analysis
+          </p>
+          
+          {/* Quick Filters */}
+          <div style={{marginBottom: 16}}>
+            <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+              Quick Select
+            </label>
+            <p style={{margin: '0 0 8px 0', fontSize: 12, color: '#667085', fontStyle: 'italic'}}>
+              Use Quick Select or manually choose months below
+            </p>
+            <div style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
+              <button 
+                className={'btn btn-xs ' + (activeQuickSelect === 'last3' ? 'primary' : '')}
+                onClick={quickFilterLast3}
                 style={{
                   borderRadius: 20,
-                  minWidth: 60,
-                  padding: '8px 16px'
+                  background: activeQuickSelect === 'last3' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                  color: activeQuickSelect === 'last3' ? '#fff' : '',
+                  boxShadow: activeQuickSelect === 'last3' ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                  border: activeQuickSelect === 'last3' ? 'none' : ''
                 }}
               >
-                {year}
+                {activeQuickSelect === 'last3' && '✓ '}Last 3 Months
               </button>
-            ))}
+              <button 
+                className={'btn btn-xs ' + (activeQuickSelect === 'last6' ? 'primary' : '')}
+                onClick={quickFilterLast6}
+                style={{
+                  borderRadius: 20,
+                  background: activeQuickSelect === 'last6' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                  color: activeQuickSelect === 'last6' ? '#fff' : '',
+                  boxShadow: activeQuickSelect === 'last6' ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                  border: activeQuickSelect === 'last6' ? 'none' : ''
+                }}
+              >
+                {activeQuickSelect === 'last6' && '✓ '}Last 6 Months
+              </button>
+              <button 
+                className={'btn btn-xs ' + (activeQuickSelect === 'alltime' ? 'primary' : '')}
+                onClick={quickFilterAllTime}
+                style={{
+                  borderRadius: 20,
+                  background: activeQuickSelect === 'alltime' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                  color: activeQuickSelect === 'alltime' ? '#fff' : '',
+                  boxShadow: activeQuickSelect === 'alltime' ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                  border: activeQuickSelect === 'alltime' ? 'none' : ''
+                }}
+              >
+                {activeQuickSelect === 'alltime' && '✓ '}All Time
+              </button>
+            </div>
           </div>
-        </div>
         
-        {/* Tags per Year */}
-        {selectedYears.length > 0 && (
-          <div style={{marginBottom: 20}}>
+          {/* Year Selection */}
+          <div style={{marginBottom: 16}}>
             <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-              Months (Tags)
+              Years
             </label>
-            {selectedYears.sort((a,b) => b - a).map(year => {
-              const availableTags = availableYearsAndTags[year] || [];
-              const selectedTags = tagsByYear[year] || [];
-              
-              return (
-                <div 
-                  key={year} 
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 8}}>
+              {availableYears.map(year => (
+                <button
+                  key={year}
+                  className={'btn btn-xs ' + (selectedYears.includes(year) ? 'primary' : '')}
+                  onClick={() => { toggleYear(year); setActiveQuickSelect(null); }}
                   style={{
-                    marginBottom: 12,
-                    paddingLeft: 16,
-                    borderLeft: '3px solid #7c3aed',
-                    paddingTop: 4,
-                    paddingBottom: 4
+                    borderRadius: 20,
+                    minWidth: 60,
+                    padding: '8px 16px',
+                    background: selectedYears.includes(year) ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                    color: selectedYears.includes(year) ? '#fff' : '',
+                    boxShadow: selectedYears.includes(year) ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                    border: selectedYears.includes(year) ? 'none' : ''
                   }}
                 >
-                  <div style={{fontSize: 12, fontWeight: 600, color: '#6b46c1', marginBottom: 8}}>
-                    {year}
-                  </div>
-                  <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
-                    {availableTags.map(tag => (
-                      <button
-                        key={tag}
-                        className={'btn btn-xs ' + (selectedTags.includes(tag) ? 'primary' : '')}
-                        onClick={() => toggleTag(year, tag)}
-                        style={{
-                          minWidth: 36,
-                          padding: '6px 12px',
-                          borderRadius: 16,
-                          fontSize: 13
-                        }}
-                      >
-                        {tag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+                  {selectedYears.includes(year) && '✓ '}{year}
+                </button>
+              ))}
+            </div>
           </div>
-        )}
         
-        {/* Type Filter */}
-        <div style={{marginBottom: 20}}>
-          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-            Transaction Type
-          </label>
+          {/* Tags per Year */}
+          {selectedYears.length > 0 && (
+            <div>
+              <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
+                Months (Tags) {selectedMonthCount > 0 && (
+                  <span style={{
+                    marginLeft: 8,
+                    padding: '2px 8px',
+                    background: '#ede9fe',
+                    color: '#6b46c1',
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 700
+                  }}>
+                    {selectedMonthCount} selected
+                  </span>
+                )}
+              </label>
+              {selectedYears.sort((a,b) => b - a).map(year => {
+                const availableTags = availableYearsAndTags[year] || [];
+                const selectedTags = tagsByYear[year] || [];
+                
+                return (
+                  <div 
+                    key={year} 
+                    style={{
+                      marginBottom: 12,
+                      paddingLeft: 16,
+                      borderLeft: '3px solid #7c3aed',
+                      paddingTop: 4,
+                      paddingBottom: 4
+                    }}
+                  >
+                    <div style={{fontSize: 12, fontWeight: 600, color: '#6b46c1', marginBottom: 8}}>
+                      {year}
+                    </div>
+                    <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+                      {availableTags.map(tag => (
+                        <button
+                          key={tag}
+                          className={'btn btn-xs ' + (selectedTags.includes(tag) ? 'primary' : '')}
+                          onClick={() => { toggleTag(year, tag); setActiveQuickSelect(null); }}
+                          style={{
+                            minWidth: 36,
+                            padding: '6px 12px',
+                            borderRadius: 16,
+                            fontSize: 13,
+                            background: selectedTags.includes(tag) ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                            color: selectedTags.includes(tag) ? '#fff' : '',
+                            boxShadow: selectedTags.includes(tag) ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                            border: selectedTags.includes(tag) ? 'none' : ''
+                          }}
+                        >
+                          {selectedTags.includes(tag) && '✓ '}{tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        
+        {/* TRANSACTION TYPE SECTION */}
+        <div style={{
+          marginBottom: 24,
+          padding: 16,
+          background: '#f9fafb',
+          borderRadius: 12,
+          border: '1px solid #e5e7eb'
+        }}>
+          <h4 style={{margin: '0 0 4px 0', fontSize: 15, fontWeight: 700, color: '#30334b'}}>
+            💳 Transaction Type
+          </h4>
+          <p style={{margin: '0 0 12px 0', fontSize: 12, color: '#667085'}}>
+            Pick whether to analyze expenses or income
+          </p>
           <div style={{display: 'inline-flex', gap: 0, backgroundColor: '#f3f4f6', borderRadius: 20, padding: 4}}>
             <button
               className={'btn btn-xs ' + (selectedType === 'Expense' ? 'primary' : '')}
@@ -2380,10 +2730,11 @@ function StatisticsTab({past, categories}){
                 background: selectedType === 'Expense' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : 'transparent',
                 color: selectedType === 'Expense' ? '#fff' : '#4b5563',
                 border: 'none',
-                boxShadow: selectedType === 'Expense' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none'
+                boxShadow: selectedType === 'Expense' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none',
+                fontWeight: 700
               }}
             >
-              Expenses
+              {selectedType === 'Expense' && '✓ '}Expenses
             </button>
             <button
               className={'btn btn-xs ' + (selectedType === 'Income' ? 'primary' : '')}
@@ -2393,77 +2744,204 @@ function StatisticsTab({past, categories}){
                 background: selectedType === 'Income' ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : 'transparent',
                 color: selectedType === 'Income' ? '#fff' : '#4b5563',
                 border: 'none',
-                boxShadow: selectedType === 'Income' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none'
+                boxShadow: selectedType === 'Income' ? '0 4px 8px rgba(124,58,237,0.25)' : 'none',
+                fontWeight: 700
               }}
             >
-              Incomes
+              {selectedType === 'Income' && '✓ '}Incomes
             </button>
           </div>
         </div>
         
-        {/* Category Filter */}
-        <div style={{marginBottom: 20}}>
-          <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-            Categories {selectedCategories.length > 0 && (
-              <span style={{fontWeight: 400, color: '#667085'}}>
-                ({selectedCategories.length} selected)
-              </span>
-            )}
-          </label>
-          <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
-            {categoryOptions.map(cat => (
-              <button
-                key={cat}
-                className={'btn btn-xs ' + (selectedCategories.includes(cat) ? 'primary' : '')}
-                onClick={() => toggleCategory(cat)}
-                style={{
-                  borderRadius: 16,
-                  padding: '6px 12px',
-                  fontSize: 13
-                }}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-        </div>
-        
-        {/* Subcategory Filter */}
-        {selectedCategories.length === 1 && subcategoryOptions.length > 0 && (
-          <div style={{marginBottom: 20}}>
-            <label style={{display: 'block', fontSize: 13, fontWeight: 600, color: '#30334b', marginBottom: 8}}>
-              Subcategories for "{selectedCategories[0]}" {selectedSubcategories.length > 0 && (
-                <span style={{fontWeight: 400, color: '#667085'}}>
-                  ({selectedSubcategories.length} selected)
-                </span>
-              )}
-            </label>
-            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
-              {subcategoryOptions.map(sub => (
+        {/* CATEGORIES & SUBCATEGORIES SECTION */}
+        <div style={{
+          marginBottom: 24,
+          padding: 16,
+          background: '#f9fafb',
+          borderRadius: 12,
+          border: '1px solid #e5e7eb'
+        }}>
+          <h4 style={{margin: '0 0 4px 0', fontSize: 15, fontWeight: 700, color: '#30334b'}}>
+            📂 Categories & Subcategories
+          </h4>
+          <p style={{margin: '0 0 12px 0', fontSize: 12, color: '#667085'}}>
+            Filter by specific spending categories
+          </p>
+          
+          {/* Category Filter */}
+          <div style={{marginBottom: 16}}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+              <label style={{fontSize: 13, fontWeight: 600, color: '#30334b'}}>
+                Categories {selectedCategories.length > 0 && (
+                  <span style={{
+                    marginLeft: 8,
+                    padding: '2px 8px',
+                    background: '#ede9fe',
+                    color: '#6b46c1',
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 700
+                  }}>
+                    {selectedCategories.length} selected
+                  </span>
+                )}
+              </label>
+              <div style={{display: 'flex', gap: 8}}>
                 <button
-                  key={sub}
-                  className={'btn btn-xs ' + (selectedSubcategories.includes(sub) ? 'primary' : '')}
-                  onClick={() => toggleSubcategory(sub)}
+                  className="btn btn-xs"
+                  onClick={selectAllCategories}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    borderRadius: 12,
+                    background: '#eef2ff',
+                    color: '#4338ca',
+                    border: '1px solid #c7d2fe'
+                  }}
+                >
+                  Select All
+                </button>
+                <button
+                  className="btn btn-xs"
+                  onClick={clearAllCategories}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    borderRadius: 12,
+                    background: '#fef2f2',
+                    color: '#991b1b',
+                    border: '1px solid #fecaca'
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
+            </div>
+            <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+              {categoryOptions.map(cat => (
+                <button
+                  key={cat}
+                  className={'btn btn-xs ' + (selectedCategories.includes(cat) ? 'primary' : '')}
+                  onClick={() => toggleCategory(cat)}
                   style={{
                     borderRadius: 16,
                     padding: '6px 12px',
-                    fontSize: 13
+                    fontSize: 13,
+                    background: selectedCategories.includes(cat) ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                    color: selectedCategories.includes(cat) ? '#fff' : '',
+                    boxShadow: selectedCategories.includes(cat) ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                    border: selectedCategories.includes(cat) ? 'none' : '',
+                    transition: 'all 0.2s'
                   }}
                 >
-                  {sub}
+                  {selectedCategories.includes(cat) && '✓ '}{cat}
                 </button>
               ))}
             </div>
           </div>
-        )}
+          
+          {/* Subcategory Filter - Only show when exactly 1 category is selected */}
+          {selectedCategories.length === 1 && subcategoryOptions.length > 0 && (
+            <div>
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+                <label style={{fontSize: 13, fontWeight: 600, color: '#30334b'}}>
+                  Subcategories {selectedSubcategories.length > 0 && (
+                    <span style={{
+                      marginLeft: 8,
+                      padding: '2px 8px',
+                      background: '#ede9fe',
+                      color: '#6b46c1',
+                      borderRadius: 12,
+                      fontSize: 11,
+                      fontWeight: 700
+                    }}>
+                      {selectedSubcategories.length} selected
+                    </span>
+                  )}
+                </label>
+                <div style={{display: 'flex', gap: 8}}>
+                  <button
+                    className="btn btn-xs"
+                    onClick={selectAllSubcategories}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 11,
+                      borderRadius: 12,
+                      background: '#eef2ff',
+                      color: '#4338ca',
+                      border: '1px solid #c7d2fe'
+                    }}
+                  >
+                    Select All
+                  </button>
+                  <button
+                    className="btn btn-xs"
+                    onClick={clearAllSubcategories}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 11,
+                      borderRadius: 12,
+                      background: '#fef2f2',
+                      color: '#991b1b',
+                      border: '1px solid #fecaca'
+                    }}
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
+              <p style={{margin: '0 0 8px 0', fontSize: 11, color: '#667085', fontStyle: 'italic'}}>
+                For "{selectedCategories[0]}"
+              </p>
+              <div style={{display: 'flex', flexWrap: 'wrap', gap: 6}}>
+                {subcategoryOptions.map(sub => (
+                  <button
+                    key={sub}
+                    className={'btn btn-xs ' + (selectedSubcategories.includes(sub) ? 'primary' : '')}
+                    onClick={() => toggleSubcategory(sub)}
+                    style={{
+                      borderRadius: 16,
+                      padding: '6px 12px',
+                      fontSize: 13,
+                      background: selectedSubcategories.includes(sub) ? 'linear-gradient(180deg,#7c3aed,#6d28d9)' : '',
+                      color: selectedSubcategories.includes(sub) ? '#fff' : '',
+                      boxShadow: selectedSubcategories.includes(sub) ? '0 4px 8px rgba(124,58,237,0.25)' : '',
+                      border: selectedSubcategories.includes(sub) ? 'none' : '',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    {selectedSubcategories.includes(sub) && '✓ '}{sub}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Info message when multiple categories selected */}
+          {selectedCategories.length > 1 && (
+            <div style={{
+              padding: '12px 16px',
+              background: '#f0f9ff',
+              border: '1px solid #bae6fd',
+              borderRadius: 8,
+              marginTop: 12
+            }}>
+              <p style={{margin: 0, fontSize: 12, color: '#0c4a6e', lineHeight: '1.5'}}>
+                ℹ️ Statistics will be calculated for <strong>all subcategories</strong> across the {selectedCategories.length} selected categories.
+                {subcategoryOptions.length > 0 && ` (${subcategoryOptions.length} total subcategories)`}
+              </p>
+            </div>
+          )}
+        </div>
         
         {/* Calculate Button */}
         <div style={{
           display: 'flex',
           gap: 12,
           alignItems: 'center',
+          justifyContent: 'space-between',
           paddingTop: 16,
-          borderTop: '1px solid #e5e7eb'
+          borderTop: '2px solid #e5e7eb'
         }}>
           <button
             className="btn primary"
@@ -2473,17 +2951,41 @@ function StatisticsTab({past, categories}){
               borderRadius: 12,
               padding: '12px 24px',
               fontSize: 14,
-              fontWeight: 700
+              fontWeight: 700,
+              boxShadow: '0 6px 16px rgba(124,58,237,0.35)'
             }}
           >
-            {calculating ? 'Calculating...' : '📊 Calculate Statistics'}
+            {calculating ? '⏳ Calculating...' : '📊 Calculate Statistics'}
           </button>
-          {error && (
-            <span style={{color: '#ef4444', fontSize: 13, fontWeight: 500}}>
-              {error}
-            </span>
-          )}
+          <button
+            className="btn btn-xs"
+            onClick={clearFilters}
+            style={{
+              borderRadius: 12,
+              padding: '8px 16px',
+              fontSize: 13,
+              background: '#f3f4f6',
+              color: '#4b5563',
+              border: '1px solid #d1d5db'
+            }}
+          >
+            🔄 Reset Filters
+          </button>
         </div>
+        {error && (
+          <div style={{
+            marginTop: 12,
+            padding: '10px 14px',
+            background: '#fef2f2',
+            border: '1px solid #fecaca',
+            borderRadius: 8,
+            color: '#991b1b',
+            fontSize: 13,
+            fontWeight: 500
+          }}>
+            ⚠️ {error}
+          </div>
+        )}
       </div>
       
       {/* Results */}
@@ -2509,9 +3011,30 @@ function StatisticsTab({past, categories}){
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td style={{fontSize: 14, fontWeight: 600}}>Mean Monthly Amount</td>
-                    <td style={{textAlign: 'right', fontSize: 15, fontWeight: 700, color: '#6b46c1'}}>
+                  <tr style={{
+                    background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+                    borderTop: '3px solid #f59e0b',
+                    borderBottom: '3px solid #f59e0b',
+                    boxShadow: '0 4px 12px rgba(245, 158, 11, 0.25)',
+                    transform: 'scale(1.005)'
+                  }}>
+                    <td style={{
+                      fontSize: 16,
+                      fontWeight: 800,
+                      color: '#92400e',
+                      padding: '14px 12px',
+                      letterSpacing: '0.3px'
+                    }}>
+                      ⭐ Mean Monthly Amount
+                    </td>
+                    <td style={{
+                      textAlign: 'right',
+                      fontSize: 18,
+                      fontWeight: 800,
+                      color: '#92400e',
+                      padding: '14px 12px',
+                      letterSpacing: '0.5px'
+                    }}>
                       ₪{fmt2(statsData.summary.avg_monthly)}
                     </td>
                   </tr>

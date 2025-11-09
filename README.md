@@ -313,7 +313,7 @@ MoneyTron/
 
 3. **Move the executable next to folders (cmd)**
    ```bat
-   move /Y dist\MoneyTron.exe .
+   move dist\MoneyTron.exe .
    ```
 
 4. **Create (or update) `Start_MoneyTron.bat`**  
